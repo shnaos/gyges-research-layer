@@ -1,0 +1,8 @@
+{
+  "name": "@gyges/local-agent-example",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  }
+}

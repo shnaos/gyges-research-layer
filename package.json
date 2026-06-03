@@ -1,0 +1,27 @@
+{
+  "name": "gyges-research-layer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first capability firewall and identity compartmentalization gateway for AI agents performing private web research.",
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix packages/core run build && npm --prefix packages/policy-engine run build && npm --prefix packages/identity-compartment run build && npm --prefix packages/search-adapters run build && npm --prefix packages/transport-router run build && npm --prefix packages/server run build",
+    "test": "npm --prefix packages/policy-engine run test",
+    "lint": "npm run typecheck",
+    "typecheck": "npm --prefix packages/core run typecheck && npm --prefix packages/policy-engine run typecheck && npm --prefix packages/identity-compartment run typecheck && npm --prefix packages/search-adapters run typecheck && npm --prefix packages/transport-router run typecheck && npm --prefix packages/server run typecheck",
+    "start": "npm --prefix packages/server run dev"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.15.30",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9",
+    "@types/js-yaml": "^4.0.9"
+  }
+}
