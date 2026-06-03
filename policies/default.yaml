@@ -1,11 +1,35 @@
 # Deny-by-default capability policy.
-# Sprint 1 MVP: the only allowed capability is low-risk `search`
-# performed by `local-agent` inside the `research` compartment.
+#
+# Every request is refused unless an explicit allow rule matches on
+# agentId + compartment + tool + risk. Each rule also binds the capability to a
+# single transport (default: direct). A request that asserts a different
+# transport is denied (no silent transport escalation).
 defaultDeny: true
 rules:
+  # Sprint 1 baseline: low-risk search for local-agent in the research
+  # compartment, over the direct transport.
   - effect: allow
     agentId: local-agent
     compartment: research
     tool: search
     riskLevel: low
+    transport: direct
+    requiresConfirmation: false
+
+  # Sprint 2 — Agent A: darknet research routed over Tor with isolated identity.
+  - effect: allow
+    agentId: research-agent
+    compartment: darknet-research
+    tool: search
+    transport: tor
+    maxRiskLevel: medium
+    requiresConfirmation: false
+
+  # Sprint 2 — Agent B: open research over the direct transport.
+  - effect: allow
+    agentId: research-agent
+    compartment: open-research
+    tool: search
+    transport: direct
+    maxRiskLevel: low
     requiresConfirmation: false
