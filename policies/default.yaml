@@ -1,0 +1,15 @@
+defaultDeny: true
+rules:
+  - effect: allow
+    agentId: local-agent
+    compartment: research-public
+    tool: search
+    riskLevel: low
+    requiresConfirmation: false
+
+  - effect: allow
+    agentId: local-agent
+    compartment: research-public
+    tool: fetch_html
+    riskLevel: medium
+    requiresConfirmation: true
