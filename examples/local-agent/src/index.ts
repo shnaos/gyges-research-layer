@@ -1,12 +1,12 @@
 const baseUrl = process.env.GRL_URL ?? 'http://localhost:3000';
 
 async function run(): Promise<void> {
-  const response = await fetch(`${baseUrl}/search`, {
+  const response = await fetch(`${baseUrl}/capabilities/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       agentId: 'local-agent',
-      compartment: 'research-public',
+      compartment: 'research',
       tool: 'search',
       riskLevel: 'low',
       input: {

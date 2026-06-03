@@ -5,11 +5,11 @@
   "description": "Local-first capability firewall and identity compartmentalization gateway for AI agents performing private web research.",
   "type": "module",
   "scripts": {
-    "build": "npm --prefix packages/core run build && npm --prefix packages/policy-engine run build && npm --prefix packages/identity-compartment run build && npm --prefix packages/search-adapters run build && npm --prefix packages/transport-router run build && npm --prefix packages/server run build",
+    "build": "npm --prefix packages/core run build && npm --prefix packages/policy-engine run build && npm --prefix packages/identity-compartment run build && npm --prefix packages/search-adapter-searxng run build && npm --prefix apps/grl-server run build",
     "test": "npm --prefix packages/policy-engine run test",
     "lint": "npm run typecheck",
-    "typecheck": "npm --prefix packages/core run typecheck && npm --prefix packages/policy-engine run typecheck && npm --prefix packages/identity-compartment run typecheck && npm --prefix packages/search-adapters run typecheck && npm --prefix packages/transport-router run typecheck && npm --prefix packages/server run typecheck",
-    "start": "npm --prefix packages/server run dev"
+    "typecheck": "npm --prefix packages/core run typecheck && npm --prefix packages/policy-engine run typecheck && npm --prefix packages/identity-compartment run typecheck && npm --prefix packages/search-adapter-searxng run typecheck && npm --prefix apps/grl-server run typecheck",
+    "start": "npm --prefix apps/grl-server run dev"
   },
   "license": "MIT",
   "dependencies": {

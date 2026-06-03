@@ -1,15 +1,11 @@
+# Deny-by-default capability policy.
+# Sprint 1 MVP: the only allowed capability is low-risk `search`
+# performed by `local-agent` inside the `research` compartment.
 defaultDeny: true
 rules:
   - effect: allow
     agentId: local-agent
-    compartment: research-public
+    compartment: research
     tool: search
     riskLevel: low
     requiresConfirmation: false
-
-  - effect: allow
-    agentId: local-agent
-    compartment: research-public
-    tool: fetch_html
-    riskLevel: medium
-    requiresConfirmation: true
