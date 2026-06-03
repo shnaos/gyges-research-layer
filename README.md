@@ -11,37 +11,36 @@ AI agents doing web research can leak identity, intent, query correlation, and b
 ```text
 Agent
 ↓
-Capability Firewall
+Capability Firewall   (packages/core)
 ↓
-Policy Engine
+Policy Engine         (packages/policy-engine, deny-by-default)
 ↓
-Identity Compartment
+Identity Compartment  (packages/identity-compartment)
 ↓
-Session Manager
+Session Manager       (packages/identity-compartment)
 ↓
-Search / Fetch Adapter
-↓
-Transport Router
+SearXNG Adapter       (packages/search-adapter-searxng, isolated)
 ```
 
-## MVP status
+Server entry point: `apps/grl-server` exposes `POST /capabilities/execute`.
+
+## Sprint 1 MVP status
 
 What this MVP does:
-- TypeScript monorepo with a Node.js API server
-- Deny-by-default capability evaluation
+- TypeScript monorepo with a single Node.js API server (`apps/grl-server`)
+- Deny-by-default capability evaluation through the Capability Firewall
 - YAML policy loading from `policies/default.yaml`
 - Explicit allow rules by `agentId + compartment + tool + riskLevel`
 - Identity compartments with per-compartment session state
-- Search adapter interface + initial SearXNG adapter
-- Fetch HTML adapter
-- Transport router abstraction + Tor transport config support
+- Isolated SearXNG search adapter — the agent never calls the search engine directly
+- A single capability entry point: `POST /capabilities/execute`
 - Local-only log file output (`logs/grl.log`)
-- Docker Compose for local SearXNG and optional Tor proxy
+- Docker Compose for local SearXNG
 - Example local agent client
 
-What this MVP does **not** do:
-- It is not a privacy browser
-- It does not guarantee anonymity
+What this MVP does **not** do (yet):
+- No Tor / transport router (planned for a later sprint)
+- It is not a privacy browser and does not guarantee anonymity
 - It has no auth, database, UI, or cloud telemetry
 
 ## Principles
@@ -67,57 +66,47 @@ npm run start
 
 Optional environment:
 
-- `GRL_ALLOWED_FETCH_HOSTS` (comma-separated hostnames, default: `example.com`)
+- `SEARXNG_URL` (default: `http://localhost:8080`)
+- `PORT` (default: `3000`)
 
-Start local dependencies:
+Start the local search engine:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d searxng
-# Optional Tor proxy
-# docker compose -f docker/docker-compose.yml --profile tor up -d tor-proxy
 ```
 
-## Example API calls
+## Capability API
 
-Evaluate capability:
+The only endpoint is `POST /capabilities/execute`. Every request is evaluated by
+the firewall and denied unless an explicit allow rule matches. In Sprint 1 the
+only allowed capability is low-risk `search` from `local-agent` in the
+`research` compartment.
+
+Allowed request (executes the search):
 
 ```bash
-curl -X POST http://localhost:3000/capability/evaluate \
+curl -X POST http://localhost:3000/capabilities/execute \
   -H 'Content-Type: application/json' \
   -d '{
     "agentId":"local-agent",
-    "compartment":"research-public",
-    "tool":"search",
-    "riskLevel":"low",
-    "input":{"query":"privacy"}
-  }'
-```
-
-Search:
-
-```bash
-curl -X POST http://localhost:3000/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "agentId":"local-agent",
-    "compartment":"research-public",
+    "compartment":"research",
     "tool":"search",
     "riskLevel":"low",
     "input":{"query":"ring of gyges"}
   }'
 ```
 
-Fetch HTML:
+Denied request (deny-by-default, returns HTTP 403):
 
 ```bash
-curl -X POST http://localhost:3000/fetch-html \
+curl -X POST http://localhost:3000/capabilities/execute \
   -H 'Content-Type: application/json' \
   -d '{
     "agentId":"local-agent",
-    "compartment":"research-public",
-    "tool":"fetch_html",
-    "riskLevel":"medium",
-    "input":{"url":"https://example.com"}
+    "compartment":"personal",
+    "tool":"search",
+    "riskLevel":"low",
+    "input":{"query":"ring of gyges"}
   }'
 ```
 

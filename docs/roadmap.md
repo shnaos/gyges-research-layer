@@ -1,13 +1,21 @@
 # Roadmap
 
-## Near term
+## Sprint 1 (current) — Runnable MVP
 
-- Expand policy conditions (domain rules, rate limits, confirmation hooks)
-- Add richer transport implementations for tor-routed requests
-- Add deterministic policy decision audit trail tooling
+- Capability firewall + deny-by-default policy engine
+- Identity compartments + session manager
+- Isolated SearXNG adapter (no Tor)
+- Single `POST /capabilities/execute` endpoint
+- Green tests for the allow/deny matrix
+
+## Next — Transport
+
+- Tor / transport router for routed requests
+- Per-compartment transport metadata and isolation
 
 ## Mid term
 
+- Expand policy conditions (domain rules, rate limits, confirmation hooks)
 - Adapter hardening and response sanitization
 - Additional search/fetch providers
 - Better local observability with structured log utilities

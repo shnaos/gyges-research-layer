@@ -1,8 +1,11 @@
+export type CapabilityTool = 'search' | 'fetch_html';
+export type RiskLevel = 'low' | 'medium' | 'high';
+
 export interface CapabilityRequest {
   agentId: string;
   compartment: string;
-  tool: 'search' | 'fetch_html';
-  riskLevel: 'low' | 'medium' | 'high';
+  tool: CapabilityTool;
+  riskLevel: RiskLevel;
   input: unknown;
 }
 
