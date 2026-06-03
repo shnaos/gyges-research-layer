@@ -43,6 +43,7 @@ export class FetchHtmlAdapter {
 
   async fetchHtml(url: string, context: FetchHtmlContext): Promise<string> {
     const parsed = new URL(url);
+
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       throw new Error('Only http(s) URLs are supported.');
     }
@@ -51,12 +52,16 @@ export class FetchHtmlAdapter {
       throw new Error('Host is not permitted by local fetch policy.');
     }
 
-    const response = await fetch(parsed.toString(), {
+    const safePath = `${parsed.pathname}${parsed.search}`;
+    const safeUrl = new URL(safePath, `https://${parsed.hostname}`);
+
+    const response = await fetch(safeUrl, {
       headers: {
         'User-Agent': 'gyges-research-layer/0.1.0',
         'X-Gyges-Transport': context.transport.id
       }
     });
+
     if (!response.ok) {
       throw new Error(`Fetch failed with status ${response.status}`);
     }
