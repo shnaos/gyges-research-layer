@@ -34,14 +34,29 @@ export class SearxngAdapter implements SearchAdapter {
   }
 }
 
+export interface FetchHtmlContext {
+  transport: TransportConfig;
+}
+
 export class FetchHtmlAdapter {
-  async fetchHtml(url: string): Promise<string> {
+  constructor(private readonly allowedHosts: readonly string[]) {}
+
+  async fetchHtml(url: string, context: FetchHtmlContext): Promise<string> {
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       throw new Error('Only http(s) URLs are supported.');
     }
 
-    const response = await fetch(url, { headers: { 'User-Agent': 'gyges-research-layer/0.1.0' } });
+    if (!this.allowedHosts.includes(parsed.hostname)) {
+      throw new Error('Host is not permitted by local fetch policy.');
+    }
+
+    const response = await fetch(parsed.toString(), {
+      headers: {
+        'User-Agent': 'gyges-research-layer/0.1.0',
+        'X-Gyges-Transport': context.transport.id
+      }
+    });
     if (!response.ok) {
       throw new Error(`Fetch failed with status ${response.status}`);
     }

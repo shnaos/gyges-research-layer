@@ -15,7 +15,12 @@ const policyPath = resolve(repositoryRoot, 'policies/default.yaml');
 const firewall = new CapabilityFirewall(YamlPolicyEngine.fromFile(policyPath));
 const sessionManager = new SessionManager();
 const searchAdapter = new SearxngAdapter(process.env.SEARXNG_URL ?? 'http://localhost:8080');
-const fetchHtmlAdapter = new FetchHtmlAdapter();
+const allowedFetchHosts = (process.env.GRL_ALLOWED_FETCH_HOSTS ?? 'example.com')
+  .split(',')
+  .map((host) => host.trim())
+  .filter(Boolean);
+
+const fetchHtmlAdapter = new FetchHtmlAdapter(allowedFetchHosts);
 const transportRouter = new TransportRouter([
   { id: 'direct', type: 'direct' },
   { id: 'tor', type: 'tor', proxyUrl: process.env.TOR_PROXY_URL ?? 'socks5://localhost:9050' }
@@ -90,7 +95,7 @@ app.post('/fetch-html', async (req, res) => {
   try {
     const transportId = (req.body.input as { transportId?: string }).transportId;
     const transport = transportRouter.route(transportId);
-    const html = await fetchHtmlAdapter.fetchHtml(url);
+    const html = await fetchHtmlAdapter.fetchHtml(url, { transport });
     sessionManager.recordHistory({ id: req.body.compartment, agentId: req.body.agentId }, { tool: 'fetch_html', url });
     sessionManager.setTransportMetadata({ id: req.body.compartment, agentId: req.body.agentId }, { transport });
     logLocal('fetch-html', { agentId: req.body.agentId, compartment: req.body.compartment, transport: transport.id });

@@ -65,6 +65,10 @@ npm test
 npm run start
 ```
 
+Optional environment:
+
+- `GRL_ALLOWED_FETCH_HOSTS` (comma-separated hostnames, default: `example.com`)
+
 Start local dependencies:
 
 ```bash
