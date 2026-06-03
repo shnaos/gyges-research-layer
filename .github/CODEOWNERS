@@ -1,0 +1,7 @@
+# Code owners for shnaos/gyges-research-layer
+#
+# All files in this repository require review from @shnaos.
+# This file is enforced together with the "Require review from Code Owners"
+# branch protection rule on `main`.
+
+* @shnaos
