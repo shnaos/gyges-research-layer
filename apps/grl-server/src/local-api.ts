@@ -13,6 +13,9 @@ import {
   ExecutionRequest,
   IdentityCompartment,
   MockTransportAdapter,
+  PrivacyBoundaryDecision,
+  PrivacyBoundaryEngine,
+  PrivacyBoundaryRule,
   RiskLevel,
   RoutingDecision,
   SessionManager,
@@ -21,6 +24,7 @@ import {
   TransportPolicyEngine,
   TransportPolicyError,
   TransportPolicyRule,
+  BOOTSTRAP_PRIVACY_BOUNDARY_RULES,
   BOOTSTRAP_TRANSPORT_POLICY_RULES
 } from '../../../packages/core/src/index.js';
 import {
@@ -39,6 +43,9 @@ import {
   HealthHttpResponse,
   PendingApprovalsHttpResponse,
   PendingApprovalView,
+  PrivacyBoundariesHttpResponse,
+  PrivacyBoundaryDecisionView,
+  PrivacyBoundaryRuleView,
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
   SessionsHttpResponse,
@@ -146,6 +153,22 @@ export function buildMockExecutionEngine(): ExecutionEngine {
 export function buildBootstrapTransportPolicyEngine(): TransportPolicyEngine {
   const engine = new TransportPolicyEngine();
   for (const rule of BOOTSTRAP_TRANSPORT_POLICY_RULES) {
+    engine.registerRule(rule);
+  }
+  return engine;
+}
+
+/**
+ * Build the Sprint 9 Privacy Boundary Engine seeded with the bootstrap rules.
+ *
+ * The engine is deterministic and fail-closed: it decides anti-correlation /
+ * privacy boundary actions only. It NEVER mints a session, rotates a session,
+ * opens a connection, or executes — and it performs no real network, browser,
+ * DNS, socket, persistence, or AI/semantic classification work.
+ */
+export function buildBootstrapPrivacyBoundaryEngine(): PrivacyBoundaryEngine {
+  const engine = new PrivacyBoundaryEngine();
+  for (const rule of BOOTSTRAP_PRIVACY_BOUNDARY_RULES) {
     engine.registerRule(rule);
   }
   return engine;
@@ -259,6 +282,31 @@ function toRoutingDecisionView(decision: RoutingDecision): RoutingDecisionView {
   };
 }
 
+/** Project a Privacy Boundary Rule into its public, secret-free HTTP view. */
+function toPrivacyBoundaryRuleView(
+  rule: PrivacyBoundaryRule
+): PrivacyBoundaryRuleView {
+  return {
+    id: rule.id,
+    sourceCompartmentId: rule.sourceCompartmentId,
+    targetCompartmentId: rule.targetCompartmentId,
+    maxAllowedRisk: rule.maxAllowedRisk,
+    actionOnViolation: rule.actionOnViolation
+  };
+}
+
+/** Project a PrivacyBoundaryDecision into its public HTTP view. */
+function toPrivacyBoundaryDecisionView(
+  decision: PrivacyBoundaryDecision
+): PrivacyBoundaryDecisionView {
+  return {
+    action: decision.action,
+    riskLevel: decision.riskLevel,
+    signals: [...decision.signals],
+    reason: decision.reason
+  };
+}
+
 export interface LocalApiOptions {
   firewall: CapabilityFirewall;
   /** Maximum accepted request body size in bytes. */
@@ -287,6 +335,14 @@ export interface LocalApiOptions {
    * isolation only — it never mints a session, opens a connection, or executes.
    */
   transportPolicyEngine?: TransportPolicyEngine;
+  /**
+   * Deterministic Privacy Boundary Engine backing `execute-mock` anti-correlation
+   * checks and the `/v1/privacy-boundaries` read endpoint. When omitted, a
+   * bootstrap engine seeded with the static rules is created. It decides
+   * correlation/boundary actions only — it never mints a session, rotates a
+   * session, opens a connection, or executes.
+   */
+  privacyBoundaryEngine?: PrivacyBoundaryEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -448,6 +504,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   const transportPolicyEngine =
     options.transportPolicyEngine ?? buildBootstrapTransportPolicyEngine();
+  const privacyBoundaryEngine =
+    options.privacyBoundaryEngine ?? buildBootstrapPrivacyBoundaryEngine();
 
   const app = express();
   app.disable('x-powered-by');
@@ -675,9 +733,63 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       throw err;
     }
 
-    // The routing decision drives whether we rotate to a fresh session or reuse
-    // an existing active one. The policy engine itself never mints a session.
-    const session = routing.shouldRotateSession
+    // Privacy Boundary Engine (Sprint 9): evaluate anti-correlation AFTER routing
+    // is resolved but BEFORE any session is minted/rotated. The engine consults
+    // metadata only (compartments, risk, routing isolation) and never mints a
+    // session, opens a connection, or executes.
+    //
+    //   - block            → no session, no execution (decision="denied")
+    //   - require_approval → enqueue approval, no execution (decision="pending")
+    //   - rotate_session   → force a fresh session before executing
+    //   - allow            → proceed (rotation still governed by routing)
+    const privacy: PrivacyBoundaryDecision = privacyBoundaryEngine.evaluate({
+      agentId: request.agentId,
+      sourceCompartmentId: request.compartmentId,
+      targetCompartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel,
+      routingIsolationLevel: routing.isolationLevel
+    });
+    const privacyView = toPrivacyBoundaryDecisionView(privacy);
+
+    // Privacy block: fail-closed. No session is created and nothing executes.
+    if (privacy.action === 'block') {
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: 'Privacy boundary blocked execution.',
+        routing: toRoutingDecisionView(routing),
+        privacyBoundary: privacyView
+      };
+      return res.status(200).json(response);
+    }
+
+    // Privacy require_approval: enqueue a pending approval and never execute.
+    if (privacy.action === 'require_approval') {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        sanitizedInput: decision.sanitizedInput,
+        reason: privacy.reason
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'pending',
+        reason: privacy.reason,
+        routing: toRoutingDecisionView(routing),
+        privacyBoundary: privacyView,
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      };
+      return res.status(200).json(response);
+    }
+
+    // The session rotates when EITHER the routing decision OR the privacy
+    // boundary decision demands it. The engines themselves never mint a session.
+    const mustRotateSession =
+      routing.shouldRotateSession || privacy.action === 'rotate_session';
+    const session = mustRotateSession
       ? sessionManager.rotateSession(request.compartmentId)
       : sessionManager.getOrCreateSession(request.compartmentId);
 
@@ -721,6 +833,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       decision: 'allowed',
       reason: decision.reason,
       routing: toRoutingDecisionView(routing),
+      privacyBoundary: privacyView,
       execution
     };
     return res.status(200).json(response);
@@ -757,6 +870,21 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res
       .status(405)
       .json({ error: 'Method not allowed. Use GET /v1/transport-policies.' });
+  });
+
+  // Read-only metadata surface: list the bootstrap privacy boundary rules.
+  // No secrets are exposed — only correlation/boundary metadata.
+  app.get('/v1/privacy-boundaries', (_req, res) => {
+    const rules = privacyBoundaryEngine
+      .listRules()
+      .map(toPrivacyBoundaryRuleView);
+    const body: PrivacyBoundariesHttpResponse = { rules };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy-boundaries', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/privacy-boundaries.' });
   });
 
   // Read-only debug surface: list sessions, optionally filtered by compartment.
@@ -912,7 +1040,8 @@ function startLocalApiServer(): void {
       maxRequests: config.sessionMaxRequests,
       reusePolicy: config.sessionReusePolicy
     }),
-    transportPolicyEngine: buildBootstrapTransportPolicyEngine()
+    transportPolicyEngine: buildBootstrapTransportPolicyEngine(),
+    privacyBoundaryEngine: buildBootstrapPrivacyBoundaryEngine()
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console

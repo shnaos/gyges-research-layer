@@ -163,6 +163,7 @@ export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
   routing?: RoutingDecisionView;
+  privacyBoundary?: PrivacyBoundaryDecisionView;
   execution?: ExecutionResultView;
   approvalRequestId?: string;
   approvalToken?: string;
@@ -239,4 +240,41 @@ export interface TransportPolicyRuleView {
 /** Response body for `GET /v1/transport-policies`. */
 export interface TransportPoliciesHttpResponse {
   rules: TransportPolicyRuleView[];
+}
+
+/**
+ * Public view of the privacy boundary decision the engine produced for a
+ * request. Pure metadata — no secrets, no compartment data, no transport handle.
+ */
+export interface PrivacyBoundaryDecisionView {
+  action: 'allow' | 'rotate_session' | 'require_approval' | 'block';
+  riskLevel: 'none' | 'low' | 'medium' | 'high';
+  signals: Array<
+    | 'same_compartment'
+    | 'cross_compartment'
+    | 'cross_tool_reuse'
+    | 'risk_escalation'
+    | 'strict_isolation_required'
+    | 'unknown_compartment'
+  >;
+  reason?: string;
+}
+
+/**
+ * Public, secret-free view of a privacy boundary rule.
+ *
+ * Returned by `GET /v1/privacy-boundaries`. It exposes only the correlation /
+ * boundary metadata of a rule — never a secret or real compartment payload.
+ */
+export interface PrivacyBoundaryRuleView {
+  id: string;
+  sourceCompartmentId: string;
+  targetCompartmentId: string;
+  maxAllowedRisk: 'none' | 'low' | 'medium' | 'high';
+  actionOnViolation: 'allow' | 'rotate_session' | 'require_approval' | 'block';
+}
+
+/** Response body for `GET /v1/privacy-boundaries`. */
+export interface PrivacyBoundariesHttpResponse {
+  rules: PrivacyBoundaryRuleView[];
 }
