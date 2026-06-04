@@ -19,7 +19,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { SessionContext, TransportKind } from '../execution/types.js';
+import { SessionContext } from '../execution/types.js';
 import {
   IdentityCompartment,
   SessionManagerConfig,
@@ -247,7 +247,7 @@ export class SessionManager {
     const record: SessionRecord = {
       sessionId: randomUUID(),
       compartmentId: compartment.id,
-      transportKind: compartment.transportKind as TransportKind,
+      transportKind: compartment.transportKind,
       status: 'active',
       createdAt,
       expiresAt: createdAt + compartment.ttlMs,
