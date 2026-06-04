@@ -164,6 +164,7 @@ export interface ExecuteMockCapabilityHttpResponse {
   reason: string;
   routing?: RoutingDecisionView;
   privacyBoundary?: PrivacyBoundaryDecisionView;
+  sandbox?: SandboxDecisionView;
   execution?: ExecutionResultView;
   approvalRequestId?: string;
   approvalToken?: string;
@@ -277,4 +278,81 @@ export interface PrivacyBoundaryRuleView {
 /** Response body for `GET /v1/privacy-boundaries`. */
 export interface PrivacyBoundariesHttpResponse {
   rules: PrivacyBoundaryRuleView[];
+}
+
+/** Sandbox permission labels declared by a manifest / granted by a policy. */
+export type AdapterSandboxPermissionView =
+  | 'execute_mock'
+  | 'network_disabled'
+  | 'no_filesystem'
+  | 'no_process_spawn'
+  | 'no_env_access';
+
+/**
+ * Public, secret-free view of a registered transport manifest.
+ *
+ * Returned by `GET /v1/transports`. It exposes only the declared capability
+ * surface of an adapter — never a secret, credential, token, or real transport
+ * endpoint/configuration.
+ */
+export interface TransportManifestView {
+  kind: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  name: string;
+  version: string;
+  supportedTools: string[];
+  declaredPermissions: AdapterSandboxPermissionView[];
+  networkAccess: boolean;
+  browserAccess: boolean;
+  filesystemAccess: boolean;
+  processSpawnAccess: boolean;
+  envAccess: boolean;
+}
+
+/** Response body for `GET /v1/transports`. */
+export interface TransportsHttpResponse {
+  transports: TransportManifestView[];
+}
+
+/**
+ * Public, secret-free view of a transport's capability-audit surface.
+ *
+ * Returned by `GET /v1/transports/audit`. Pure metadata — no secrets.
+ */
+export interface TransportCapabilityAuditView {
+  kind: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  supportedTools: string[];
+  declaredPermissions: AdapterSandboxPermissionView[];
+  networkAccess: boolean;
+  browserAccess: boolean;
+  filesystemAccess: boolean;
+  processSpawnAccess: boolean;
+  envAccess: boolean;
+}
+
+/** Response body for `GET /v1/transports/audit`. */
+export interface TransportsAuditHttpResponse {
+  audit: TransportCapabilityAuditView[];
+}
+
+/** Public view of a single sandbox violation. */
+export interface SandboxViolationView {
+  code:
+    | 'transport_not_registered'
+    | 'tool_not_supported'
+    | 'permission_not_allowed'
+    | 'network_not_allowed'
+    | 'browser_not_allowed'
+    | 'filesystem_not_allowed'
+    | 'process_spawn_not_allowed'
+    | 'env_access_not_allowed';
+  reason: string;
+}
+
+/**
+ * Public view of the sandbox decision the registry produced for an execution.
+ * Pure metadata — no secrets, no transport configuration.
+ */
+export interface SandboxDecisionView {
+  action: 'allow' | 'block';
+  violations: SandboxViolationView[];
 }

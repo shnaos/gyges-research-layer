@@ -1,4 +1,4 @@
-export type CapabilityTool = 'search' | 'fetch_html';
+export type CapabilityTool = 'search' | 'fetch_html' | 'fetch_json';
 export type RiskLevel = 'low' | 'medium' | 'high';
 
 /**
@@ -54,6 +54,8 @@ export * from './session-manager/index.js';
 export * from './transport-policy/index.js';
 
 export * from './privacy-boundary/index.js';
+
+export * from './transport-registry/index.js';
 
 export {
   ApprovalQueue,
