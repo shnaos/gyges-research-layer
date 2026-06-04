@@ -13,35 +13,59 @@ Agent
 ↓
 Capability Firewall   (packages/core)
 ↓
-Policy Engine         (packages/policy-engine, deny-by-default)
+Policy Engine         (packages/policy-engine, deny-by-default + transport enforcement)
 ↓
 Identity Compartment  (packages/identity-compartment)
 ↓
 Session Manager       (packages/identity-compartment)
 ↓
-SearXNG Adapter       (packages/search-adapter-searxng, isolated)
+Transport Router      (packages/transport-router, direct / tor / proxy)
+↓
+SearXNG Adapter       (packages/search-adapter-searxng, isolated, transport-bound)
+↓
+Web
 ```
 
 Server entry point: `apps/grl-server` exposes `POST /capabilities/execute`.
 
-## Sprint 1 MVP status
+## Sprint 2 status — transport isolation + identity compartmentalization
 
-What this MVP does:
+What GRL now does, on top of the Sprint 1 capability firewall:
+
 - TypeScript monorepo with a single Node.js API server (`apps/grl-server`)
 - Deny-by-default capability evaluation through the Capability Firewall
 - YAML policy loading from `policies/default.yaml`
-- Explicit allow rules by `agentId + compartment + tool + riskLevel`
-- Identity compartments with per-compartment session state
-- Isolated SearXNG search adapter — the agent never calls the search engine directly
+- Explicit allow rules by `agentId + compartment + tool + risk`, each bound to a transport
+- **Transport Router** selecting `direct`, `tor`, or `proxy` — chosen by policy, never by the agent
+- **Tor / proxy routing over SOCKS5** with remote DNS (no local DNS leak) and per-session circuit isolation
+- **Fail-closed transports**: if Tor/proxy cannot be established the request is denied, never downgraded to direct
+- **Identity compartments** that each own isolated runtime state: `sessionId`, `cookieJar`, `userAgent`, `transport`, `dnsPolicy`
+- **Session Manager** lifecycle: create, rotate identity, destroy, idle/TTL expiration
+- **Anti-correlation guarantees**: no shared cookies, sessions, or user-agents between compartments; no transport mixing within a compartment
+- Isolated SearXNG adapter that receives only a sanitized query and a transport-bound fetch client — it never sees the agent, compartment, or policy
 - A single capability entry point: `POST /capabilities/execute`
 - Local-only log file output (`logs/grl.log`)
 - Docker Compose for local SearXNG
 - Example local agent client
 
-What this MVP does **not** do (yet):
-- No Tor / transport router (planned for a later sprint)
+What this still does **not** do (by design — see Non-goals in the roadmap):
+- No VPN, multi-hop routing, browser automation, scraping, or fingerprint spoofing
 - It is not a privacy browser and does not guarantee anonymity
 - It has no auth, database, UI, or cloud telemetry
+
+## Transports
+
+The transport is decided internally from policy + compartment + session — the
+agent only ever requests a `tool`. Supported transports:
+
+| Transport | Routing | DNS |
+| --------- | ------- | --- |
+| `direct`  | system network | system resolver |
+| `tor`     | SOCKS5 (default `127.0.0.1:9050`) with per-session circuit isolation | remote (via Tor) |
+| `proxy`   | SOCKS5 (configurable) | remote (via proxy) |
+
+If a policy binds a capability to `tor` and Tor is unreachable, the request is
+denied (`502`). There is no silent fallback to `direct`.
 
 ## Principles
 
@@ -53,6 +77,9 @@ What this MVP does **not** do (yet):
 - no hidden external calls
 - deterministic policy decisions
 - explicit `agentId`, `compartment`, `tool`, `riskLevel` for every request
+- transport decided by policy, never by the agent
+- fail-closed transports, no silent downgrade, no implicit transport escalation
+- no cross-compartment state sharing (cookies, sessions, user-agents, transport)
 - privacy layer, not anonymity guarantee
 
 ## Quickstart
@@ -68,6 +95,9 @@ Optional environment:
 
 - `SEARXNG_URL` (default: `http://localhost:8080`)
 - `PORT` (default: `3000`)
+- `TOR_SOCKS` SOCKS5 endpoint for `tor` transport (default: `127.0.0.1:9050`)
+- `PROXY_SOCKS` SOCKS5 endpoint for `proxy` transport (e.g. `127.0.0.1:1080`)
+- `TRANSPORT_TIMEOUT_MS` per-request transport timeout
 
 Start the local search engine:
 
@@ -78,9 +108,9 @@ docker compose -f docker/docker-compose.yml up -d searxng
 ## Capability API
 
 The only endpoint is `POST /capabilities/execute`. Every request is evaluated by
-the firewall and denied unless an explicit allow rule matches. In Sprint 1 the
-only allowed capability is low-risk `search` from `local-agent` in the
-`research` compartment.
+the firewall and denied unless an explicit allow rule matches. The agent never
+chooses its transport: the matched policy rule binds the capability to a
+transport, and the compartment is permanently isolated on that transport.
 
 Allowed request (executes the search):
 
