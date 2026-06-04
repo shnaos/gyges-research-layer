@@ -11,9 +11,12 @@ import {
   DEFAULT_APPROVAL_TTL_MS,
   ExecutionEngine,
   ExecutionRequest,
+  IdentityCompartment,
   MockTransportAdapter,
   RiskLevel,
-  createSessionContext
+  SessionManager,
+  SessionRecord,
+  SessionReusePolicy
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -22,6 +25,8 @@ import {
 } from '../../../packages/policy-engine/src/index.js';
 import {
   ApprovalDecisionHttpResponse,
+  CompartmentsHttpResponse,
+  CompartmentView,
   EvaluateCapabilityHttpRequest,
   EvaluateCapabilityHttpResponse,
   ExecuteMockCapabilityHttpResponse,
@@ -29,7 +34,9 @@ import {
   HealthHttpResponse,
   PendingApprovalsHttpResponse,
   PendingApprovalView,
-  RequestCapabilityHttpResponse
+  RequestCapabilityHttpResponse,
+  SessionsHttpResponse,
+  SessionView
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -121,6 +128,87 @@ export function buildMockExecutionEngine(): ExecutionEngine {
   return new ExecutionEngine({ adapters: [new MockTransportAdapter()] });
 }
 
+/** Default session TTL (10 minutes) when `GRL_SESSION_TTL_MS` is unset. */
+export const DEFAULT_SESSION_TTL_MS = 600_000;
+/** Default per-session request ceiling when `GRL_SESSION_MAX_REQUESTS` is unset. */
+export const DEFAULT_SESSION_MAX_REQUESTS = 25;
+/** Default reuse policy when `GRL_SESSION_REUSE_POLICY` is unset. */
+export const DEFAULT_SESSION_REUSE_POLICY: SessionReusePolicy = 'reuse_active';
+
+/** Identity of the single statically-bootstrapped compartment. */
+export const BOOTSTRAP_COMPARTMENT_ID = 'research';
+
+export interface SessionBootstrapConfig {
+  ttlMs: number;
+  maxRequests: number;
+  reusePolicy: SessionReusePolicy;
+}
+
+/**
+ * Build the in-memory Session Manager for the Local API MVP.
+ *
+ * It registers exactly one static compartment (`research`). There is NO dynamic
+ * compartment creation surface in this sprint: the manager keeps all state
+ * in-memory and performs no persistence, no network, and no browser work. Its
+ * sole job is to mint/reuse/rotate session *identities* for the mock transport.
+ */
+export function buildBootstrapSessionManager(
+  config: SessionBootstrapConfig,
+  now: () => number = Date.now
+): SessionManager {
+  const manager = new SessionManager(
+    {
+      defaultTtlMs: config.ttlMs,
+      defaultMaxRequests: config.maxRequests
+    },
+    { now }
+  );
+  const compartment: IdentityCompartment = {
+    id: BOOTSTRAP_COMPARTMENT_ID,
+    label: 'Default research compartment',
+    transportKind: 'mock',
+    reusePolicy: config.reusePolicy,
+    ttlMs: config.ttlMs,
+    maxRequests: config.maxRequests,
+    createdAt: now()
+  };
+  manager.registerCompartment(compartment);
+  return manager;
+}
+
+/** Project an Identity Compartment into its public, secret-free HTTP view. */
+function toCompartmentView(compartment: IdentityCompartment): CompartmentView {
+  const view: CompartmentView = {
+    id: compartment.id,
+    transportKind: compartment.transportKind,
+    reusePolicy: compartment.reusePolicy,
+    ttlMs: compartment.ttlMs,
+    maxRequests: compartment.maxRequests,
+    createdAt: compartment.createdAt
+  };
+  if (compartment.label !== undefined) {
+    view.label = compartment.label;
+  }
+  return view;
+}
+
+/** Project a Session Record into its public, secret-free HTTP view. */
+function toSessionView(session: SessionRecord): SessionView {
+  const view: SessionView = {
+    sessionId: session.sessionId,
+    compartmentId: session.compartmentId,
+    transportKind: session.transportKind,
+    status: session.status,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    requestCount: session.requestCount
+  };
+  if (session.lastUsedAt !== undefined) {
+    view.lastUsedAt = session.lastUsedAt;
+  }
+  return view;
+}
+
 export interface LocalApiOptions {
   firewall: CapabilityFirewall;
   /** Maximum accepted request body size in bytes. */
@@ -135,6 +223,13 @@ export interface LocalApiOptions {
    * omitted, a mock-only engine is created. It NEVER performs real network I/O.
    */
   executionEngine?: ExecutionEngine;
+  /**
+   * In-memory Session Manager backing `execute-mock` session identity and the
+   * compartments/sessions read endpoints. When omitted, a bootstrap manager
+   * with the single static `research` compartment is created. It performs no
+   * persistence, no network, and no browser work.
+   */
+  sessionManager?: SessionManager;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -287,6 +382,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const approvalQueue = options.approvalQueue ?? buildApprovalQueue();
   const executionEngine = options.executionEngine ?? buildMockExecutionEngine();
+  const sessionManager =
+    options.sessionManager ??
+    buildBootstrapSessionManager({
+      ttlMs: DEFAULT_SESSION_TTL_MS,
+      maxRequests: DEFAULT_SESSION_MAX_REQUESTS,
+      reusePolicy: DEFAULT_SESSION_REUSE_POLICY
+    });
 
   const app = express();
   app.disable('x-powered-by');
@@ -472,12 +574,11 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       return res.status(200).json(response);
     }
 
-    // Allowed without confirmation: build an ExecutionRequest bound to a fresh
-    // mock session and run it through the execution engine.
-    const session = createSessionContext({
-      compartmentId: request.compartmentId,
-      transportKind: 'mock'
-    });
+    // Allowed without confirmation: obtain a session identity from the Session
+    // Manager (reuse/rotate per compartment policy), then run it through the
+    // mock execution engine. recordUse is called only when execution was
+    // actually launched (i.e. not fail-closed/blocked for a missing adapter).
+    const session = sessionManager.getOrCreateSession(request.compartmentId);
     const executionRequest: ExecutionRequest = {
       id: randomUUID(),
       agentId: request.agentId,
@@ -486,10 +587,17 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       riskLevel: request.riskLevel as RiskLevel,
       input: request.input,
       sanitizedInput: decision.sanitizedInput,
-      session
+      session: sessionManager.toSessionContext(session)
     };
 
     const result = await executionEngine.execute(executionRequest);
+
+    // A `blocked` result means no adapter ran (fail-closed); it does not consume
+    // the session's request budget. Any other outcome (success/failed) means the
+    // transport was actually invoked, so the use is recorded.
+    if (result.status !== 'blocked') {
+      sessionManager.recordUse(session.sessionId);
+    }
 
     const execution: ExecutionResultView = {
       status: result.status,
@@ -513,6 +621,39 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res.status(405).json({
       error: 'Method not allowed. Use POST /v1/capabilities/execute-mock.'
     });
+  });
+
+  // Read-only debug surface: list the statically-bootstrapped compartments.
+  // No secrets are exposed — only compartment lifecycle metadata.
+  app.get('/v1/compartments', (_req, res) => {
+    const compartments = sessionManager.listCompartments().map(toCompartmentView);
+    const body: CompartmentsHttpResponse = { compartments };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/compartments', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/compartments.' });
+  });
+
+  // Read-only debug surface: list sessions, optionally filtered by compartment.
+  // No tokens or secrets are exposed — only session lifecycle metadata.
+  app.get('/v1/sessions', (req, res) => {
+    const rawCompartmentId = req.query.compartmentId;
+    let compartmentId: string | undefined;
+    if (typeof rawCompartmentId === 'string' && rawCompartmentId.length > 0) {
+      compartmentId = rawCompartmentId;
+    } else if (Array.isArray(rawCompartmentId)) {
+      return res
+        .status(400)
+        .json({ error: 'Query "compartmentId" must be a single value.' });
+    }
+    const sessions = sessionManager.listSessions(compartmentId).map(toSessionView);
+    const body: SessionsHttpResponse = { sessions };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/sessions', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/sessions.' });
   });
 
   app.get('/v1/approvals/pending', (_req, res) => {
@@ -578,14 +719,27 @@ export interface LocalApiServerConfig {
   port: number;
   maxBodyBytes: number;
   approvalTtlMs: number;
+  sessionTtlMs: number;
+  sessionMaxRequests: number;
+  sessionReusePolicy: SessionReusePolicy;
+}
+
+/** Parse a reuse policy from an env value, falling back to the default. */
+export function parseReusePolicy(
+  value: string | undefined
+): SessionReusePolicy {
+  return value === 'always_rotate' || value === 'reuse_active'
+    ? value
+    : DEFAULT_SESSION_REUSE_POLICY;
 }
 
 /**
  * Resolve the server configuration from an environment map.
  *
- * Reads `GRL_HOST`, `GRL_PORT`, `GRL_MAX_BODY_BYTES`, and `GRL_APPROVAL_TTL_MS`.
- * The `env` argument is injectable so configuration can be tested without
- * mutating global state.
+ * Reads `GRL_HOST`, `GRL_PORT`, `GRL_MAX_BODY_BYTES`, `GRL_APPROVAL_TTL_MS`,
+ * `GRL_SESSION_TTL_MS`, `GRL_SESSION_MAX_REQUESTS`, and
+ * `GRL_SESSION_REUSE_POLICY`. The `env` argument is injectable so configuration
+ * can be tested without mutating global state.
  */
 export function resolveServerConfig(
   env: NodeJS.ProcessEnv = process.env
@@ -597,6 +751,12 @@ export function resolveServerConfig(
   const approvalTtlMs = env.GRL_APPROVAL_TTL_MS
     ? Number(env.GRL_APPROVAL_TTL_MS)
     : DEFAULT_APPROVAL_TTL_MS;
+  const sessionTtlMs = env.GRL_SESSION_TTL_MS
+    ? Number(env.GRL_SESSION_TTL_MS)
+    : DEFAULT_SESSION_TTL_MS;
+  const sessionMaxRequests = env.GRL_SESSION_MAX_REQUESTS
+    ? Number(env.GRL_SESSION_MAX_REQUESTS)
+    : DEFAULT_SESSION_MAX_REQUESTS;
   return {
     host: env.GRL_HOST || DEFAULT_HOST,
     port: Number.isFinite(port) ? port : DEFAULT_PORT,
@@ -604,7 +764,16 @@ export function resolveServerConfig(
     approvalTtlMs:
       Number.isFinite(approvalTtlMs) && approvalTtlMs > 0
         ? approvalTtlMs
-        : DEFAULT_APPROVAL_TTL_MS
+        : DEFAULT_APPROVAL_TTL_MS,
+    sessionTtlMs:
+      Number.isFinite(sessionTtlMs) && sessionTtlMs > 0
+        ? sessionTtlMs
+        : DEFAULT_SESSION_TTL_MS,
+    sessionMaxRequests:
+      Number.isFinite(sessionMaxRequests) && sessionMaxRequests > 0
+        ? sessionMaxRequests
+        : DEFAULT_SESSION_MAX_REQUESTS,
+    sessionReusePolicy: parseReusePolicy(env.GRL_SESSION_REUSE_POLICY)
   };
 }
 
@@ -614,7 +783,12 @@ function startLocalApiServer(): void {
     firewall: buildBootstrapFirewall(),
     maxBodyBytes: config.maxBodyBytes,
     approvalQueue: buildApprovalQueue(config.approvalTtlMs),
-    executionEngine: buildMockExecutionEngine()
+    executionEngine: buildMockExecutionEngine(),
+    sessionManager: buildBootstrapSessionManager({
+      ttlMs: config.sessionTtlMs,
+      maxRequests: config.sessionMaxRequests,
+      reusePolicy: config.sessionReusePolicy
+    })
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console

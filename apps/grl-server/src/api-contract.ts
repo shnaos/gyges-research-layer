@@ -149,3 +149,46 @@ export interface ExecuteMockCapabilityHttpResponse {
   approvalRequestId?: string;
   approvalToken?: string;
 }
+
+/**
+ * Public, secret-free view of an Identity Compartment.
+ *
+ * Returned by `GET /v1/compartments`. A compartment carries no secrets,
+ * credentials, or real transport configuration — only lifecycle metadata.
+ */
+export interface CompartmentView {
+  id: string;
+  label?: string;
+  transportKind: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  reusePolicy: 'reuse_active' | 'always_rotate';
+  ttlMs: number;
+  maxRequests: number;
+  createdAt: number;
+}
+
+/** Response body for `GET /v1/compartments`. */
+export interface CompartmentsHttpResponse {
+  compartments: CompartmentView[];
+}
+
+/**
+ * Public, secret-free view of a session.
+ *
+ * Returned by `GET /v1/sessions`. It exposes only session lifecycle metadata —
+ * never a token, credential, or transport handle.
+ */
+export interface SessionView {
+  sessionId: string;
+  compartmentId: string;
+  transportKind: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  status: 'active' | 'rotated' | 'expired' | 'revoked';
+  createdAt: number;
+  expiresAt: number;
+  requestCount: number;
+  lastUsedAt?: number;
+}
+
+/** Response body for `GET /v1/sessions`. */
+export interface SessionsHttpResponse {
+  sessions: SessionView[];
+}
