@@ -197,8 +197,8 @@ describe('ApprovalQueue — listing', () => {
     const pendingTwo = queue.create(baseInput());
 
     const pending = queue.listPending();
-    const ids = pending.map((r) => r.id).sort();
-    expect(ids).toEqual([pendingTwo.request.id].sort());
+    const ids = pending.map((r) => r.id);
+    expect(ids).toEqual([pendingTwo.request.id]);
     // pendingOne expired with the others when the clock advanced.
     expect(queue.getById(pendingOne.request.id)?.status).toBe('expired');
     expect(queue.getById(toExpire.request.id)?.status).toBe('expired');
