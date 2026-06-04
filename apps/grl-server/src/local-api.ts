@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -8,7 +9,11 @@ import {
   CapabilityRequest,
   CapabilityTool,
   DEFAULT_APPROVAL_TTL_MS,
-  RiskLevel
+  ExecutionEngine,
+  ExecutionRequest,
+  MockTransportAdapter,
+  RiskLevel,
+  createSessionContext
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -19,6 +24,8 @@ import {
   ApprovalDecisionHttpResponse,
   EvaluateCapabilityHttpRequest,
   EvaluateCapabilityHttpResponse,
+  ExecuteMockCapabilityHttpResponse,
+  ExecutionResultView,
   HealthHttpResponse,
   PendingApprovalsHttpResponse,
   PendingApprovalView,
@@ -103,6 +110,17 @@ export function buildApprovalQueue(ttlMs?: number): ApprovalQueue {
   return new ApprovalQueue({ ttlMs: ttlMs ?? DEFAULT_APPROVAL_TTL_MS });
 }
 
+/**
+ * Build the Sprint 6 execution engine wired with the mock transport ONLY.
+ *
+ * This engine performs no real network I/O: the single registered adapter is
+ * the deterministic {@link MockTransportAdapter}. No `direct`/`tor`/`proxy`/
+ * `searxng`/`browser` transport is registered in Sprint 6.
+ */
+export function buildMockExecutionEngine(): ExecutionEngine {
+  return new ExecutionEngine({ adapters: [new MockTransportAdapter()] });
+}
+
 export interface LocalApiOptions {
   firewall: CapabilityFirewall;
   /** Maximum accepted request body size in bytes. */
@@ -112,6 +130,11 @@ export interface LocalApiOptions {
    * omitted, a fresh queue with the default TTL is created.
    */
   approvalQueue?: ApprovalQueue;
+  /**
+   * Execution engine backing the experimental `execute-mock` endpoint. When
+   * omitted, a mock-only engine is created. It NEVER performs real network I/O.
+   */
+  executionEngine?: ExecutionEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -263,6 +286,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const { firewall } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const approvalQueue = options.approvalQueue ?? buildApprovalQueue();
+  const executionEngine = options.executionEngine ?? buildMockExecutionEngine();
 
   const app = express();
   app.disable('x-powered-by');
@@ -392,6 +416,105 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       .json({ error: 'Method not allowed. Use POST /v1/capabilities/request.' });
   });
 
+  // Experimental Sprint 6 endpoint: evaluate, then — only when allowed without
+  // confirmation — execute through the MOCK transport. This endpoint is
+  // mock-only: it performs no fetch, DNS, socket, browser, or any real network
+  // egress. A deny never executes; a pending never executes.
+  app.post('/v1/capabilities/execute-mock', async (req, res) => {
+    if (!req.is('application/json')) {
+      return res
+        .status(400)
+        .json({ error: 'Content-Type must be application/json.' });
+    }
+
+    const validated = validateEvaluateBody(req.body);
+    if ('error' in validated) {
+      return res.status(400).json({ error: validated.error });
+    }
+
+    const { request } = validated;
+    const capabilityRequest: CapabilityRequest = {
+      agentId: request.agentId,
+      compartment: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel,
+      input: request.input
+    };
+
+    const decision = firewall.evaluate(capabilityRequest);
+
+    // Deny: a firewall refusal never triggers execution.
+    if (!decision.allowed) {
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: decision.reason
+      };
+      return res.status(200).json(response);
+    }
+
+    // Allowed but requires confirmation: enqueue and never execute.
+    if (decision.requiresConfirmation) {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        sanitizedInput: decision.sanitizedInput,
+        reason: decision.reason
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'pending',
+        reason: decision.reason,
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      };
+      return res.status(200).json(response);
+    }
+
+    // Allowed without confirmation: build an ExecutionRequest bound to a fresh
+    // mock session and run it through the execution engine.
+    const session = createSessionContext({
+      compartmentId: request.compartmentId,
+      transportKind: 'mock'
+    });
+    const executionRequest: ExecutionRequest = {
+      id: randomUUID(),
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel,
+      input: request.input,
+      sanitizedInput: decision.sanitizedInput,
+      session
+    };
+
+    const result = await executionEngine.execute(executionRequest);
+
+    const execution: ExecutionResultView = {
+      status: result.status,
+      transportKind: result.transportKind
+    };
+    if (result.output !== undefined) {
+      execution.output = result.output;
+    }
+    if (result.error !== undefined) {
+      execution.error = result.error;
+    }
+
+    const response: ExecuteMockCapabilityHttpResponse = {
+      decision: 'allowed',
+      reason: decision.reason,
+      execution
+    };
+    return res.status(200).json(response);
+  });
+  app.all('/v1/capabilities/execute-mock', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use POST /v1/capabilities/execute-mock.'
+    });
+  });
+
   app.get('/v1/approvals/pending', (_req, res) => {
     const pending: PendingApprovalView[] = approvalQueue
       .listPending()
@@ -490,7 +613,8 @@ function startLocalApiServer(): void {
   const app = createLocalApiApp({
     firewall: buildBootstrapFirewall(),
     maxBodyBytes: config.maxBodyBytes,
-    approvalQueue: buildApprovalQueue(config.approvalTtlMs)
+    approvalQueue: buildApprovalQueue(config.approvalTtlMs),
+    executionEngine: buildMockExecutionEngine()
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console
