@@ -46,3 +46,18 @@ export class CapabilityFirewall {
     return this.evaluator.evaluate(request);
   }
 }
+
+export {
+  ApprovalQueue,
+  DEFAULT_APPROVAL_TTL_MS
+} from './approval-queue/index.js';
+export type {
+  ApprovalQueueOptions,
+  ApprovalStatus,
+  ApprovalRequest,
+  ApprovalToken,
+  CreateApprovalRequestInput,
+  CreatedApproval,
+  ApprovalActionError,
+  ApprovalActionResult
+} from './approval-queue/index.js';
