@@ -78,7 +78,7 @@ describe('TransportCapabilityRegistry — registration', () => {
     registry.registerManifest(manifest());
     const listed = registry.listManifests();
     expect(listed).toHaveLength(1);
-    listed[0].supportedTools.push('fetch_html');
+    listed[0].supportedTools.push('fetch_pdf' as never);
     listed[0].name = 'mutated';
     // Mutating the returned copy never affects the registry.
     expect(registry.getManifest('mock')?.name).toBe('Mock Transport Adapter');
@@ -93,7 +93,7 @@ describe('TransportCapabilityRegistry — registration', () => {
     const registry = new TransportCapabilityRegistry();
     const input = manifest();
     registry.registerManifest(input);
-    input.supportedTools.push('fetch_html');
+    input.supportedTools.push('fetch_pdf' as never);
     input.networkAccess = true;
     expect(registry.getManifest('mock')?.supportedTools).toEqual([
       'search',
