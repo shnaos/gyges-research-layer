@@ -7,9 +7,12 @@
   "scripts": {
     "build": "npm --prefix packages/core run build && npm --prefix packages/policy-engine run build && npm --prefix packages/identity-compartment run build && npm --prefix packages/transport-router run build && npm --prefix packages/search-adapter-searxng run build && npm --prefix apps/grl-server run build",
     "test": "vitest run",
+    "test:server": "vitest run apps/grl-server",
     "lint": "npm run typecheck",
     "typecheck": "npm --prefix packages/core run typecheck && npm --prefix packages/policy-engine run typecheck && npm --prefix packages/identity-compartment run typecheck && npm --prefix packages/transport-router run typecheck && npm --prefix packages/search-adapter-searxng run typecheck && npm --prefix apps/grl-server run typecheck",
-    "start": "npm --prefix apps/grl-server run dev"
+    "start": "npm --prefix apps/grl-server run dev",
+    "dev:server": "npm --prefix apps/grl-server run dev:local-api",
+    "build:server": "npm --prefix apps/grl-server run build"
   },
   "license": "MIT",
   "dependencies": {
