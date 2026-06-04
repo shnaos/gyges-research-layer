@@ -14,9 +14,14 @@ import {
   IdentityCompartment,
   MockTransportAdapter,
   RiskLevel,
+  RoutingDecision,
   SessionManager,
   SessionRecord,
-  SessionReusePolicy
+  SessionReusePolicy,
+  TransportPolicyEngine,
+  TransportPolicyError,
+  TransportPolicyRule,
+  BOOTSTRAP_TRANSPORT_POLICY_RULES
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -35,8 +40,11 @@ import {
   PendingApprovalsHttpResponse,
   PendingApprovalView,
   RequestCapabilityHttpResponse,
+  RoutingDecisionView,
   SessionsHttpResponse,
-  SessionView
+  SessionView,
+  TransportPoliciesHttpResponse,
+  TransportPolicyRuleView
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -128,6 +136,21 @@ export function buildMockExecutionEngine(): ExecutionEngine {
   return new ExecutionEngine({ adapters: [new MockTransportAdapter()] });
 }
 
+/**
+ * Build the Sprint 8 Transport Policy Engine seeded with the bootstrap rules.
+ *
+ * The engine is deterministic and fail-closed: it decides transport/rotation/
+ * isolation only. It NEVER mints a session, opens a connection, or executes —
+ * and it references only the `mock` transport. No real network I/O.
+ */
+export function buildBootstrapTransportPolicyEngine(): TransportPolicyEngine {
+  const engine = new TransportPolicyEngine();
+  for (const rule of BOOTSTRAP_TRANSPORT_POLICY_RULES) {
+    engine.registerRule(rule);
+  }
+  return engine;
+}
+
 /** Default session TTL (10 minutes) when `GRL_SESSION_TTL_MS` is unset. */
 export const DEFAULT_SESSION_TTL_MS = 600_000;
 /** Default per-session request ceiling when `GRL_SESSION_MAX_REQUESTS` is unset. */
@@ -209,6 +232,33 @@ function toSessionView(session: SessionRecord): SessionView {
   return view;
 }
 
+/** Project a Transport Policy Rule into its public, secret-free HTTP view. */
+function toTransportPolicyRuleView(
+  rule: TransportPolicyRule
+): TransportPolicyRuleView {
+  return {
+    tool: rule.tool,
+    riskLevel: rule.riskLevel,
+    preferredTransport: rule.preferredTransport,
+    isolationPolicy: {
+      level: rule.isolationPolicy.level,
+      forceRotateOnHighRisk: rule.isolationPolicy.forceRotateOnHighRisk,
+      forbidSessionReuse: rule.isolationPolicy.forbidSessionReuse,
+      allowCrossToolReuse: rule.isolationPolicy.allowCrossToolReuse
+    }
+  };
+}
+
+/** Project a RoutingDecision into its public HTTP view. */
+function toRoutingDecisionView(decision: RoutingDecision): RoutingDecisionView {
+  return {
+    transportKind: decision.transportKind,
+    shouldRotateSession: decision.shouldRotateSession,
+    isolationLevel: decision.isolationLevel,
+    reason: decision.reason
+  };
+}
+
 export interface LocalApiOptions {
   firewall: CapabilityFirewall;
   /** Maximum accepted request body size in bytes. */
@@ -230,6 +280,13 @@ export interface LocalApiOptions {
    * persistence, no network, and no browser work.
    */
   sessionManager?: SessionManager;
+  /**
+   * Deterministic Transport Policy Engine backing `execute-mock` routing and the
+   * `/v1/transport-policies` read endpoint. When omitted, a bootstrap engine
+   * seeded with the static rules is created. It decides routing/rotation/
+   * isolation only — it never mints a session, opens a connection, or executes.
+   */
+  transportPolicyEngine?: TransportPolicyEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -389,6 +446,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       maxRequests: DEFAULT_SESSION_MAX_REQUESTS,
       reusePolicy: DEFAULT_SESSION_REUSE_POLICY
     });
+  const transportPolicyEngine =
+    options.transportPolicyEngine ?? buildBootstrapTransportPolicyEngine();
 
   const app = express();
   app.disable('x-powered-by');
@@ -574,11 +633,56 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       return res.status(200).json(response);
     }
 
-    // Allowed without confirmation: obtain a session identity from the Session
-    // Manager (reuse/rotate per compartment policy), then run it through the
-    // mock execution engine. recordUse is called only when execution was
-    // actually launched (i.e. not fail-closed/blocked for a missing adapter).
-    const session = sessionManager.getOrCreateSession(request.compartmentId);
+    // Allowed without confirmation: resolve the routing decision FIRST (the
+    // Transport Policy Engine consults only tool + riskLevel and never touches
+    // sessions), then select a session identity per that decision, then run it
+    // through the mock execution engine.
+    //
+    // Strict separation of concerns:
+    //   - the policy engine decides (routing/rotation/isolation), nothing more
+    //   - the Session Manager mints/reuses/rotates the session identity
+    //   - the Execution Engine runs the request through the mock transport
+    //
+    // A missing routing rule is fail-closed: no session is created and no
+    // execution happens (HTTP 200, decision="denied").
+    let routing: RoutingDecision;
+    try {
+      routing = transportPolicyEngine.resolve({
+        id: randomUUID(),
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        sanitizedInput: decision.sanitizedInput,
+        // The session is decided AFTER routing; this context is not consulted
+        // by the engine and is replaced below with the real session identity.
+        session: {
+          sessionId: '',
+          compartmentId: request.compartmentId,
+          transportKind: 'mock',
+          createdAt: 0
+        }
+      });
+    } catch (err) {
+      if (err instanceof TransportPolicyError) {
+        const response: ExecuteMockCapabilityHttpResponse = {
+          decision: 'denied',
+          reason: `No transport routing rule available: ${err.message}`
+        };
+        return res.status(200).json(response);
+      }
+      throw err;
+    }
+
+    // The routing decision drives whether we rotate to a fresh session or reuse
+    // an existing active one. The policy engine itself never mints a session.
+    const session = routing.shouldRotateSession
+      ? sessionManager.rotateSession(request.compartmentId)
+      : sessionManager.getOrCreateSession(request.compartmentId);
+
+    // Inject the transport from the RoutingDecision into the execution context
+    // so the Execution Engine routes through exactly the resolved transport.
     const executionRequest: ExecutionRequest = {
       id: randomUUID(),
       agentId: request.agentId,
@@ -587,7 +691,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       riskLevel: request.riskLevel as RiskLevel,
       input: request.input,
       sanitizedInput: decision.sanitizedInput,
-      session: sessionManager.toSessionContext(session)
+      session: {
+        ...sessionManager.toSessionContext(session),
+        transportKind: routing.transportKind
+      }
     };
 
     const result = await executionEngine.execute(executionRequest);
@@ -613,6 +720,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const response: ExecuteMockCapabilityHttpResponse = {
       decision: 'allowed',
       reason: decision.reason,
+      routing: toRoutingDecisionView(routing),
       execution
     };
     return res.status(200).json(response);
@@ -634,6 +742,21 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res
       .status(405)
       .json({ error: 'Method not allowed. Use GET /v1/compartments.' });
+  });
+
+  // Read-only metadata surface: list the bootstrap transport policy rules.
+  // No secrets are exposed — only routing/isolation metadata.
+  app.get('/v1/transport-policies', (_req, res) => {
+    const rules = transportPolicyEngine
+      .listRules()
+      .map(toTransportPolicyRuleView);
+    const body: TransportPoliciesHttpResponse = { rules };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/transport-policies', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/transport-policies.' });
   });
 
   // Read-only debug surface: list sessions, optionally filtered by compartment.
@@ -788,7 +911,8 @@ function startLocalApiServer(): void {
       ttlMs: config.sessionTtlMs,
       maxRequests: config.sessionMaxRequests,
       reusePolicy: config.sessionReusePolicy
-    })
+    }),
+    transportPolicyEngine: buildBootstrapTransportPolicyEngine()
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console
