@@ -110,3 +110,42 @@ export interface ApprovalDecisionHttpResponse {
   id: string;
   status: 'approved' | 'rejected';
 }
+
+/**
+ * Request body for `POST /v1/capabilities/execute-mock`.
+ *
+ * Structurally identical to the evaluate/request bodies: the boundary runs the
+ * same firewall, then — only when allowed without confirmation — executes the
+ * request through the mock transport. This endpoint is mock-only and never
+ * performs any real network egress.
+ */
+export type ExecuteMockCapabilityHttpRequest = EvaluateCapabilityHttpRequest;
+
+/**
+ * Public, transport-safe view of an execution result returned by
+ * `POST /v1/capabilities/execute-mock` when a capability is allowed.
+ */
+export interface ExecutionResultView {
+  status: 'success' | 'blocked' | 'failed';
+  transportKind: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  output?: unknown;
+  error?: string;
+}
+
+/**
+ * Response body for `POST /v1/capabilities/execute-mock`.
+ *
+ * - `denied`  — firewall refused the capability; NO execution happened
+ * - `pending` — firewall flagged confirmation; an approval request was enqueued
+ *   and NO execution happened. `approvalRequestId`/`approvalToken` are returned
+ *   exactly once.
+ * - `allowed` — firewall permitted it; the request was executed through the mock
+ *   transport and `execution` carries the result.
+ */
+export interface ExecuteMockCapabilityHttpResponse {
+  decision: CapabilityRequestDecision;
+  reason: string;
+  execution?: ExecutionResultView;
+  approvalRequestId?: string;
+  approvalToken?: string;
+}
