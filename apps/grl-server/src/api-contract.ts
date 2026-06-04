@@ -133,18 +133,36 @@ export interface ExecutionResultView {
 }
 
 /**
+ * Public view of the routing decision the Transport Policy Engine produced for
+ * an allowed execution. Pure metadata — no secrets, no transport configuration.
+ */
+export interface RoutingDecisionView {
+  transportKind: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  shouldRotateSession: boolean;
+  isolationLevel: 'none' | 'session' | 'compartment' | 'strict';
+  reason:
+    | 'default_transport'
+    | 'forced_rotation'
+    | 'strict_isolation'
+    | 'risk_escalation'
+    | 'reuse_allowed';
+}
+
+/**
  * Response body for `POST /v1/capabilities/execute-mock`.
  *
  * - `denied`  — firewall refused the capability; NO execution happened
  * - `pending` — firewall flagged confirmation; an approval request was enqueued
  *   and NO execution happened. `approvalRequestId`/`approvalToken` are returned
  *   exactly once.
- * - `allowed` — firewall permitted it; the request was executed through the mock
- *   transport and `execution` carries the result.
+ * - `allowed` — firewall permitted it; the Transport Policy Engine produced a
+ *   `routing` decision and the request was executed through the mock transport,
+ *   with `execution` carrying the result.
  */
 export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
+  routing?: RoutingDecisionView;
   execution?: ExecutionResultView;
   approvalRequestId?: string;
   approvalToken?: string;
@@ -191,4 +209,34 @@ export interface SessionView {
 /** Response body for `GET /v1/sessions`. */
 export interface SessionsHttpResponse {
   sessions: SessionView[];
+}
+
+/**
+ * Public, secret-free view of an isolation policy.
+ *
+ * Returned (nested) by `GET /v1/transport-policies`. Pure metadata.
+ */
+export interface IsolationPolicyView {
+  level: 'none' | 'session' | 'compartment' | 'strict';
+  forceRotateOnHighRisk: boolean;
+  forbidSessionReuse: boolean;
+  allowCrossToolReuse: boolean;
+}
+
+/**
+ * Public, secret-free view of a transport policy rule.
+ *
+ * Returned by `GET /v1/transport-policies`. It exposes only the routing/
+ * isolation metadata of a rule — never a secret or real transport handle.
+ */
+export interface TransportPolicyRuleView {
+  tool: string;
+  riskLevel: string;
+  preferredTransport: 'mock' | 'direct' | 'tor' | 'proxy' | 'searxng' | 'browser';
+  isolationPolicy: IsolationPolicyView;
+}
+
+/** Response body for `GET /v1/transport-policies`. */
+export interface TransportPoliciesHttpResponse {
+  rules: TransportPolicyRuleView[];
 }
