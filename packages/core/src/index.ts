@@ -53,6 +53,8 @@ export * from './session-manager/index.js';
 
 export * from './transport-policy/index.js';
 
+export * from './privacy-boundary/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS
