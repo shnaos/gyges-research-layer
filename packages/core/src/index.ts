@@ -49,6 +49,8 @@ export class CapabilityFirewall {
 
 export * from './execution/index.js';
 
+export * from './session-manager/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS
