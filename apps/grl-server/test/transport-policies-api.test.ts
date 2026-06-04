@@ -3,6 +3,7 @@ import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   CapabilityFirewall,
+  PrivacyBoundaryEngine,
   SessionManager,
   TransportPolicyEngine,
   BOOTSTRAP_FETCH_HTML_RULE,
@@ -12,6 +13,7 @@ import { PolicyDocument, YamlPolicyEngine } from '../../../packages/policy-engin
 import {
   buildApprovalQueue,
   buildBootstrapFirewall,
+  buildBootstrapPrivacyBoundaryEngine,
   buildBootstrapSessionManager,
   buildBootstrapTransportPolicyEngine,
   buildMockExecutionEngine,
@@ -35,6 +37,7 @@ interface StartOptions {
   firewall?: CapabilityFirewall;
   sessionManager?: SessionManager;
   transportPolicyEngine?: TransportPolicyEngine;
+  privacyBoundaryEngine?: PrivacyBoundaryEngine;
 }
 
 async function startApp(options: StartOptions = {}): Promise<StartedServer> {
@@ -51,7 +54,9 @@ async function startApp(options: StartOptions = {}): Promise<StartedServer> {
     executionEngine: buildMockExecutionEngine(),
     sessionManager,
     transportPolicyEngine:
-      options.transportPolicyEngine ?? buildBootstrapTransportPolicyEngine()
+      options.transportPolicyEngine ?? buildBootstrapTransportPolicyEngine(),
+    privacyBoundaryEngine:
+      options.privacyBoundaryEngine ?? buildBootstrapPrivacyBoundaryEngine()
   });
   const server = app.listen(0, DEFAULT_HOST);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -107,6 +112,23 @@ function fetchHtmlNoConfirmFirewall(): CapabilityFirewall {
     ]
   };
   return new CapabilityFirewall(new YamlPolicyEngine(policy));
+}
+
+/**
+ * Privacy boundary engine that allows `research` self-access up to MEDIUM risk,
+ * so the routing/rotation path stays observable for medium fetch_html without
+ * the bootstrap boundary (which caps at low) escalating it to approval.
+ */
+function mediumAllowedPrivacyEngine(): PrivacyBoundaryEngine {
+  const engine = new PrivacyBoundaryEngine();
+  engine.registerRule({
+    id: 'research-self-medium',
+    sourceCompartmentId: 'research',
+    targetCompartmentId: 'research',
+    maxAllowedRisk: 'medium',
+    actionOnViolation: 'require_approval'
+  });
+  return engine;
 }
 
 const ALLOW_BODY = {
@@ -212,7 +234,10 @@ describe('GRL Local API — execute-mock routing', () => {
   });
 
   it('medium fetch_html forces a session rotation (strict isolation)', async () => {
-    const { base } = await startApp({ firewall: fetchHtmlNoConfirmFirewall() });
+    const { base } = await startApp({
+      firewall: fetchHtmlNoConfirmFirewall(),
+      privacyBoundaryEngine: mediumAllowedPrivacyEngine()
+    });
     const first = await executeMock(base, FETCH_HTML_MEDIUM_BODY);
     const second = await executeMock(base, FETCH_HTML_MEDIUM_BODY);
 
@@ -231,7 +256,10 @@ describe('GRL Local API — execute-mock routing', () => {
   });
 
   it('strict isolation level is visible in the response', async () => {
-    const { base } = await startApp({ firewall: fetchHtmlNoConfirmFirewall() });
+    const { base } = await startApp({
+      firewall: fetchHtmlNoConfirmFirewall(),
+      privacyBoundaryEngine: mediumAllowedPrivacyEngine()
+    });
     const res = await executeMock(base, FETCH_HTML_MEDIUM_BODY);
     expect(res.json.routing.isolationLevel).toBe('strict');
   });
