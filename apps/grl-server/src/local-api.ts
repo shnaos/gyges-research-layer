@@ -5,6 +5,7 @@ import express from 'express';
 import {
   ApprovalQueue,
   ApprovalRequest,
+  AuditQuery,
   CapabilityFirewall,
   CapabilityRequest,
   CapabilityTool,
@@ -19,6 +20,10 @@ import {
   RiskLevel,
   RoutingDecision,
   SandboxDecision,
+  SecurityEvent,
+  SecurityEventEngine,
+  SecurityEventType,
+  EventSeverity,
   SessionManager,
   SessionRecord,
   SessionReusePolicy,
@@ -40,6 +45,8 @@ import {
 } from '../../../packages/policy-engine/src/index.js';
 import {
   ApprovalDecisionHttpResponse,
+  AuditEventHttpResponse,
+  AuditEventsHttpResponse,
   CompartmentsHttpResponse,
   CompartmentView,
   EvaluateCapabilityHttpRequest,
@@ -55,6 +62,7 @@ import {
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
   SandboxDecisionView,
+  SecurityEventView,
   SessionsHttpResponse,
   SessionView,
   TransportCapabilityAuditView,
@@ -213,6 +221,48 @@ export function buildBootstrapPrivacyBoundaryEngine(): PrivacyBoundaryEngine {
   }
   return engine;
 }
+
+/**
+ * Build the Sprint 11 Security Event Engine backing the audit trail.
+ *
+ * The engine is deterministic-by-default in tests (injectable clock + id
+ * generator) and purely in-memory: it records normalised, secret-free
+ * {@link SecurityEvent}s and serves them back over the read endpoints. It NEVER
+ * writes a file, opens a socket / DNS / network connection, spawns a process,
+ * persists durably, or performs cloud telemetry.
+ */
+export function buildSecurityEventEngine(): SecurityEventEngine {
+  return new SecurityEventEngine();
+}
+
+/** Every valid {@link SecurityEventType}, used to validate audit query params. */
+export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
+  'capability_allowed',
+  'capability_denied',
+  'approval_pending',
+  'approval_approved',
+  'approval_rejected',
+  'privacy_boundary_blocked',
+  'privacy_boundary_rotation',
+  'routing_resolved',
+  'session_created',
+  'session_rotated',
+  'session_revoked',
+  'sandbox_allowed',
+  'sandbox_blocked',
+  'execution_started',
+  'execution_succeeded',
+  'execution_blocked',
+  'execution_failed'
+];
+
+/** Every valid {@link EventSeverity}, used to validate audit query params. */
+export const VALID_EVENT_SEVERITIES: readonly EventSeverity[] = [
+  'debug',
+  'info',
+  'warning',
+  'critical'
+];
 
 /** Default session TTL (10 minutes) when `GRL_SESSION_TTL_MS` is unset. */
 export const DEFAULT_SESSION_TTL_MS = 600_000;
@@ -392,6 +442,102 @@ function toSandboxDecisionView(decision: SandboxDecision): SandboxDecisionView {
   };
 }
 
+/** Project a recorded {@link SecurityEvent} into its public HTTP view. */
+function toSecurityEventView(event: SecurityEvent): SecurityEventView {
+  const view: SecurityEventView = {
+    id: event.id,
+    timestamp: event.timestamp,
+    type: event.type,
+    severity: event.severity,
+    message: event.message
+  };
+  if (event.agentId !== undefined) view.agentId = event.agentId;
+  if (event.compartmentId !== undefined) view.compartmentId = event.compartmentId;
+  if (event.sessionId !== undefined) view.sessionId = event.sessionId;
+  if (event.requestId !== undefined) view.requestId = event.requestId;
+  if (event.executionId !== undefined) view.executionId = event.executionId;
+  if (event.approvalRequestId !== undefined) {
+    view.approvalRequestId = event.approvalRequestId;
+  }
+  if (event.metadata !== undefined) view.metadata = event.metadata;
+  return view;
+}
+
+/**
+ * Parse and validate the `GET /v1/audit/events` query string into an
+ * {@link AuditQuery}. Returns `{ error }` on the first invalid parameter so the
+ * endpoint can answer `400` — this is purely structural validation.
+ */
+function validateAuditQuery(
+  raw: Record<string, unknown>
+): { query: AuditQuery } | { error: string } {
+  const query: AuditQuery = {};
+
+  const readString = (key: string): string | undefined => {
+    const value = raw[key];
+    if (value === undefined) return undefined;
+    return typeof value === 'string' ? value : '__invalid__';
+  };
+
+  const type = readString('type');
+  if (type !== undefined) {
+    if (!VALID_SECURITY_EVENT_TYPES.includes(type as SecurityEventType)) {
+      return { error: `Invalid "type" query parameter: ${String(raw.type)}.` };
+    }
+    query.type = type as SecurityEventType;
+  }
+
+  const severity = readString('severity');
+  if (severity !== undefined) {
+    if (!VALID_EVENT_SEVERITIES.includes(severity as EventSeverity)) {
+      return {
+        error: `Invalid "severity" query parameter: ${String(raw.severity)}.`
+      };
+    }
+    query.severity = severity as EventSeverity;
+  }
+
+  for (const key of [
+    'agentId',
+    'compartmentId',
+    'sessionId',
+    'requestId',
+    'executionId'
+  ] as const) {
+    const value = readString(key);
+    if (value !== undefined) {
+      if (!isNonEmptyString(value)) {
+        return { error: `Invalid "${key}" query parameter.` };
+      }
+      query[key] = value;
+    }
+  }
+
+  for (const key of ['since', 'until'] as const) {
+    const value = readString(key);
+    if (value !== undefined) {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+        return { error: `Invalid "${key}" query parameter: must be an integer.` };
+      }
+      query[key] = parsed;
+    }
+  }
+
+  const limit = readString('limit');
+  if (limit !== undefined) {
+    const parsed = Number(limit);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      return {
+        error: 'Invalid "limit" query parameter: must be a non-negative integer.'
+      };
+    }
+    query.limit = parsed;
+  }
+
+  return { query };
+}
+
 export interface LocalApiOptions {
   firewall: CapabilityFirewall;
   /** Maximum accepted request body size in bytes. */
@@ -436,10 +582,46 @@ export interface LocalApiOptions {
    * network / browser / filesystem / process work.
    */
   transportRegistry?: TransportCapabilityRegistry;
+  /**
+   * Security Event Engine backing the Sprint 11 audit trail. It records the
+   * normalised security events emitted across the `execute-mock` lifecycle and
+   * the approval endpoints, and serves them back over `GET /v1/audit/events`
+   * and `GET /v1/audit/events/:id`. When omitted, a fresh in-memory engine is
+   * created. It performs no persistence, no file write, and no network work.
+   */
+  securityEventEngine?: SecurityEventEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Describe a request input WITHOUT ever storing it.
+ *
+ * Returns only a coarse `inputType` and a UTF-8 `inputSizeBytes` measurement —
+ * never the raw value. This keeps the audit trail free of any sensitive request
+ * payload while still recording a useful, privacy-safe shape signal.
+ */
+function describeInput(input: unknown): {
+  inputType: string;
+  inputSizeBytes: number;
+} {
+  const inputType =
+    input === null
+      ? 'null'
+      : Array.isArray(input)
+        ? 'array'
+        : typeof input;
+  let inputSizeBytes = 0;
+  try {
+    const serialized =
+      typeof input === 'string' ? input : JSON.stringify(input ?? '');
+    inputSizeBytes = Buffer.byteLength(serialized ?? '', 'utf8');
+  } catch {
+    inputSizeBytes = 0;
+  }
+  return { inputType, inputSizeBytes };
 }
 
 /**
@@ -516,6 +698,7 @@ function toPendingApprovalView(request: ApprovalRequest): PendingApprovalView {
  */
 function handleApprovalDecision(
   approvalQueue: ApprovalQueue,
+  securityEventEngine: SecurityEventEngine,
   action: 'approve' | 'reject',
   req: express.Request,
   res: express.Response
@@ -544,6 +727,22 @@ function handleApprovalDecision(
       : approvalQueue.reject(id, token);
 
   if (result.ok) {
+    // Audit the decision WITHOUT the token. Only secret-free metadata is stored.
+    securityEventEngine.emit({
+      type: action === 'approve' ? 'approval_approved' : 'approval_rejected',
+      severity: 'info',
+      agentId: result.request.agentId,
+      compartmentId: result.request.compartmentId,
+      approvalRequestId: result.request.id,
+      message:
+        action === 'approve'
+          ? 'Approval request approved.'
+          : 'Approval request rejected.',
+      metadata: {
+        tool: result.request.tool,
+        riskLevel: result.request.riskLevel
+      }
+    });
     const response: ApprovalDecisionHttpResponse = {
       id: result.request.id,
       status: result.request.status as 'approved' | 'rejected'
@@ -602,6 +801,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     options.transportPolicyEngine ?? buildBootstrapTransportPolicyEngine();
   const privacyBoundaryEngine =
     options.privacyBoundaryEngine ?? buildBootstrapPrivacyBoundaryEngine();
+  const securityEventEngine =
+    options.securityEventEngine ?? buildSecurityEventEngine();
 
   const app = express();
   app.disable('x-powered-by');
@@ -748,6 +949,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     }
 
     const { request } = validated;
+    // One correlation id ties every audit event of this request together. It is
+    // a fresh local UUID — never a token, secret, or any caller-supplied value.
+    const requestId = randomUUID();
+    const inputDescriptor = describeInput(request.input);
     const capabilityRequest: CapabilityRequest = {
       agentId: request.agentId,
       compartment: request.compartmentId,
@@ -760,6 +965,19 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Deny: a firewall refusal never triggers execution.
     if (!decision.allowed) {
+      securityEventEngine.emit({
+        type: 'capability_denied',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability denied by firewall.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          reason: decision.reason
+        }
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: decision.reason
@@ -778,6 +996,21 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         sanitizedInput: decision.sanitizedInput,
         reason: decision.reason
       });
+      // Audit the pending approval WITHOUT the one-time token.
+      securityEventEngine.emit({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Capability requires human approval.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          reason: decision.reason
+        }
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: decision.reason,
@@ -786,6 +1019,21 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       };
       return res.status(200).json(response);
     }
+
+    // Allowed without confirmation.
+    securityEventEngine.emit({
+      type: 'capability_allowed',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      message: 'Capability allowed by firewall.',
+      metadata: {
+        tool: request.tool,
+        riskLevel: request.riskLevel,
+        reason: decision.reason
+      }
+    });
 
     // Allowed without confirmation: resolve the routing decision FIRST (the
     // Transport Policy Engine consults only tool + riskLevel and never touches
@@ -829,6 +1077,22 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       throw err;
     }
 
+    securityEventEngine.emit({
+      type: 'routing_resolved',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      message: 'Transport routing resolved.',
+      metadata: {
+        tool: request.tool,
+        riskLevel: request.riskLevel,
+        transportKind: routing.transportKind,
+        routingReason: routing.reason,
+        isolationLevel: routing.isolationLevel
+      }
+    });
+
     // Privacy Boundary Engine (Sprint 9): evaluate anti-correlation AFTER routing
     // is resolved but BEFORE any session is minted/rotated. The engine consults
     // metadata only (compartments, risk, routing isolation) and never mints a
@@ -850,6 +1114,20 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Privacy block: fail-closed. No session is created and nothing executes.
     if (privacy.action === 'block') {
+      securityEventEngine.emit({
+        type: 'privacy_boundary_blocked',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Privacy boundary blocked execution.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          privacySignals: privacy.signals,
+          reason: privacy.reason
+        }
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Privacy boundary blocked execution.',
@@ -870,6 +1148,21 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         sanitizedInput: decision.sanitizedInput,
         reason: privacy.reason
       });
+      securityEventEngine.emit({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Privacy boundary requires human approval.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          privacySignals: privacy.signals,
+          reason: privacy.reason
+        }
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: privacy.reason,
@@ -881,13 +1174,57 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       return res.status(200).json(response);
     }
 
+    // A privacy-driven rotation is its own audited signal.
+    if (privacy.action === 'rotate_session') {
+      securityEventEngine.emit({
+        type: 'privacy_boundary_rotation',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Privacy boundary forced a session rotation.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          privacySignals: privacy.signals,
+          reason: privacy.reason
+        }
+      });
+    }
+
     // The session rotates when EITHER the routing decision OR the privacy
     // boundary decision demands it. The engines themselves never mint a session.
     const mustRotateSession =
       routing.shouldRotateSession || privacy.action === 'rotate_session';
+    const sessionsBefore = sessionManager.size();
     const session = mustRotateSession
       ? sessionManager.rotateSession(request.compartmentId)
       : sessionManager.getOrCreateSession(request.compartmentId);
+
+    // Audit the session lifecycle: a rotation, or a freshly-minted session.
+    if (mustRotateSession) {
+      securityEventEngine.emit({
+        type: 'session_rotated',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        sessionId: session.sessionId,
+        requestId,
+        message: 'Session rotated.',
+        metadata: { transportKind: session.transportKind }
+      });
+    } else if (sessionManager.size() > sessionsBefore) {
+      securityEventEngine.emit({
+        type: 'session_created',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        sessionId: session.sessionId,
+        requestId,
+        message: 'Session created.',
+        metadata: { transportKind: session.transportKind }
+      });
+    }
 
     // Inject the transport from the RoutingDecision into the execution context
     // so the Execution Engine routes through exactly the resolved transport.
@@ -905,6 +1242,25 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       }
     };
 
+    // Audit the start of execution before invoking the transport.
+    securityEventEngine.emit({
+      type: 'execution_started',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      sessionId: session.sessionId,
+      requestId,
+      executionId: executionRequest.id,
+      message: 'Execution started.',
+      metadata: {
+        tool: request.tool,
+        riskLevel: request.riskLevel,
+        transportKind: routing.transportKind,
+        inputType: inputDescriptor.inputType,
+        inputSizeBytes: inputDescriptor.inputSizeBytes
+      }
+    });
+
     const result = await executionEngine.execute(executionRequest);
 
     // A `blocked` result means no adapter ran (fail-closed); it does not consume
@@ -913,6 +1269,73 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (result.status !== 'blocked') {
       sessionManager.recordUse(session.sessionId);
     }
+
+    // Audit the sandbox verdict (when the engine enforced it) and the terminal
+    // execution status, using the shared correlation + execution ids.
+    const sandboxViolationCodes = result.sandbox
+      ? result.sandbox.violations.map((violation) => violation.code)
+      : [];
+    if (result.sandbox !== undefined) {
+      if (result.sandbox.action === 'block') {
+        securityEventEngine.emit({
+          type: 'sandbox_blocked',
+          severity: 'warning',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          sessionId: session.sessionId,
+          requestId,
+          executionId: executionRequest.id,
+          message: 'Adapter sandbox blocked execution.',
+          metadata: {
+            tool: request.tool,
+            transportKind: result.transportKind,
+            sandboxViolations: sandboxViolationCodes
+          }
+        });
+      } else {
+        securityEventEngine.emit({
+          type: 'sandbox_allowed',
+          severity: 'info',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          sessionId: session.sessionId,
+          requestId,
+          executionId: executionRequest.id,
+          message: 'Adapter sandbox allowed execution.',
+          metadata: {
+            tool: request.tool,
+            transportKind: result.transportKind
+          }
+        });
+      }
+    }
+
+    const terminalType: SecurityEventType =
+      result.status === 'success'
+        ? 'execution_succeeded'
+        : result.status === 'failed'
+          ? 'execution_failed'
+          : 'execution_blocked';
+    const terminalSeverity: EventSeverity =
+      result.status === 'success' ? 'info' : 'warning';
+    securityEventEngine.emit({
+      type: terminalType,
+      severity: terminalSeverity,
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      sessionId: session.sessionId,
+      requestId,
+      executionId: executionRequest.id,
+      message: `Execution ${result.status}.`,
+      metadata: {
+        tool: request.tool,
+        transportKind: result.transportKind,
+        executionStatus: result.status,
+        ...(sandboxViolationCodes.length > 0
+          ? { sandboxViolations: sandboxViolationCodes }
+          : {})
+      }
+    });
 
     const execution: ExecutionResultView = {
       status: result.status,
@@ -1036,6 +1459,41 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res.status(405).json({ error: 'Method not allowed. Use GET /v1/sessions.' });
   });
 
+  // Read-only audit surface (Sprint 11): list recorded security events with an
+  // optional query, or fetch a single event by id. The response carries only
+  // normalised, secret-free metadata — NEVER a token, secret, raw header, raw
+  // env, raw stack trace, or raw request input.
+  app.get('/v1/audit/events', (req, res) => {
+    const validated = validateAuditQuery(req.query as Record<string, unknown>);
+    if ('error' in validated) {
+      return res.status(400).json({ error: validated.error });
+    }
+    const events = securityEventEngine
+      .query(validated.query)
+      .map(toSecurityEventView);
+    const body: AuditEventsHttpResponse = { events };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/audit/events', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/audit/events.' });
+  });
+
+  app.get('/v1/audit/events/:id', (req, res) => {
+    const event = securityEventEngine.getEvent(req.params.id);
+    if (!event) {
+      return res.status(404).json({ error: 'Security event not found.' });
+    }
+    const body: AuditEventHttpResponse = { event: toSecurityEventView(event) };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/audit/events/:id', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/audit/events/:id.' });
+  });
+
   app.get('/v1/approvals/pending', (_req, res) => {
     const pending: PendingApprovalView[] = approvalQueue
       .listPending()
@@ -1050,7 +1508,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   });
 
   app.post('/v1/approvals/:id/approve', (req, res) =>
-    handleApprovalDecision(approvalQueue, 'approve', req, res)
+    handleApprovalDecision(approvalQueue, securityEventEngine, 'approve', req, res)
   );
   app.all('/v1/approvals/:id/approve', (_req, res) => {
     res
@@ -1059,7 +1517,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   });
 
   app.post('/v1/approvals/:id/reject', (req, res) =>
-    handleApprovalDecision(approvalQueue, 'reject', req, res)
+    handleApprovalDecision(approvalQueue, securityEventEngine, 'reject', req, res)
   );
   app.all('/v1/approvals/:id/reject', (_req, res) => {
     res
