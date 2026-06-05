@@ -12,6 +12,7 @@
  */
 
 import { CapabilityTool, RiskLevel } from '../index.js';
+import type { SandboxDecision } from '../transport-registry/types.js';
 
 /**
  * Terminal status of an {@link ExecutionResult}.
@@ -86,6 +87,12 @@ export interface ExecutionResult {
   error?: string;
   startedAt: number;
   completedAt: number;
+  /**
+   * Sandbox decision evaluated before the adapter ran, when the engine is wired
+   * with a {@link TransportCapabilityRegistry}. Present on both an allowed
+   * execution and a sandbox-`blocked` result; absent when no registry is wired.
+   */
+  sandbox?: SandboxDecision;
 }
 
 /**

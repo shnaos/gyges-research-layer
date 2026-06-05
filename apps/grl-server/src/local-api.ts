@@ -18,14 +18,20 @@ import {
   PrivacyBoundaryRule,
   RiskLevel,
   RoutingDecision,
+  SandboxDecision,
   SessionManager,
   SessionRecord,
   SessionReusePolicy,
+  TransportCapabilityAudit,
+  TransportCapabilityRegistry,
+  TransportManifest,
   TransportPolicyEngine,
   TransportPolicyError,
   TransportPolicyRule,
   BOOTSTRAP_PRIVACY_BOUNDARY_RULES,
-  BOOTSTRAP_TRANSPORT_POLICY_RULES
+  BOOTSTRAP_TRANSPORT_MANIFESTS,
+  BOOTSTRAP_TRANSPORT_POLICY_RULES,
+  STRICT_SANDBOX_POLICY
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -48,10 +54,15 @@ import {
   PrivacyBoundaryRuleView,
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
+  SandboxDecisionView,
   SessionsHttpResponse,
   SessionView,
+  TransportCapabilityAuditView,
+  TransportManifestView,
   TransportPoliciesHttpResponse,
-  TransportPolicyRuleView
+  TransportPolicyRuleView,
+  TransportsAuditHttpResponse,
+  TransportsHttpResponse
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -137,10 +148,39 @@ export function buildApprovalQueue(ttlMs?: number): ApprovalQueue {
  *
  * This engine performs no real network I/O: the single registered adapter is
  * the deterministic {@link MockTransportAdapter}. No `direct`/`tor`/`proxy`/
- * `searxng`/`browser` transport is registered in Sprint 6.
+ * `searxng`/`browser` transport is registered.
+ *
+ * When a {@link TransportCapabilityRegistry} is supplied, the engine enforces
+ * the Sprint 10 adapter sandbox ({@link STRICT_SANDBOX_POLICY}) BEFORE invoking
+ * the adapter: an unregistered transport, an unsupported tool, or a sandbox
+ * violation yields a `blocked` result and the adapter is never called.
  */
-export function buildMockExecutionEngine(): ExecutionEngine {
-  return new ExecutionEngine({ adapters: [new MockTransportAdapter()] });
+export function buildMockExecutionEngine(
+  registry?: TransportCapabilityRegistry
+): ExecutionEngine {
+  return new ExecutionEngine({
+    adapters: [new MockTransportAdapter()],
+    ...(registry
+      ? { registry, sandboxPolicy: STRICT_SANDBOX_POLICY }
+      : {})
+  });
+}
+
+/**
+ * Build the Sprint 10 Transport Capability Registry seeded with the bootstrap
+ * manifest(s).
+ *
+ * The registry is deterministic and purely in-memory: it declares the mock
+ * transport's capability surface and evaluates the adapter sandbox. It NEVER
+ * loads a plugin, reads a manifest from disk, touches a database, or performs
+ * any real network / browser / filesystem / process work.
+ */
+export function buildBootstrapTransportRegistry(): TransportCapabilityRegistry {
+  const registry = new TransportCapabilityRegistry();
+  for (const manifest of BOOTSTRAP_TRANSPORT_MANIFESTS) {
+    registry.registerManifest(manifest);
+  }
+  return registry;
 }
 
 /**
@@ -307,6 +347,51 @@ function toPrivacyBoundaryDecisionView(
   };
 }
 
+/** Project a Transport Manifest into its public, secret-free HTTP view. */
+function toTransportManifestView(
+  manifest: TransportManifest
+): TransportManifestView {
+  return {
+    kind: manifest.kind,
+    name: manifest.name,
+    version: manifest.version,
+    supportedTools: [...manifest.supportedTools],
+    declaredPermissions: [...manifest.declaredPermissions],
+    networkAccess: manifest.networkAccess,
+    browserAccess: manifest.browserAccess,
+    filesystemAccess: manifest.filesystemAccess,
+    processSpawnAccess: manifest.processSpawnAccess,
+    envAccess: manifest.envAccess
+  };
+}
+
+/** Project a Transport Capability Audit into its public HTTP view. */
+function toTransportCapabilityAuditView(
+  entry: TransportCapabilityAudit
+): TransportCapabilityAuditView {
+  return {
+    kind: entry.kind,
+    supportedTools: [...entry.supportedTools],
+    declaredPermissions: [...entry.declaredPermissions],
+    networkAccess: entry.networkAccess,
+    browserAccess: entry.browserAccess,
+    filesystemAccess: entry.filesystemAccess,
+    processSpawnAccess: entry.processSpawnAccess,
+    envAccess: entry.envAccess
+  };
+}
+
+/** Project a SandboxDecision into its public HTTP view. */
+function toSandboxDecisionView(decision: SandboxDecision): SandboxDecisionView {
+  return {
+    action: decision.action,
+    violations: decision.violations.map((violation) => ({
+      code: violation.code,
+      reason: violation.reason
+    }))
+  };
+}
+
 export interface LocalApiOptions {
   firewall: CapabilityFirewall;
   /** Maximum accepted request body size in bytes. */
@@ -343,6 +428,14 @@ export interface LocalApiOptions {
    * session, opens a connection, or executes.
    */
   privacyBoundaryEngine?: PrivacyBoundaryEngine;
+  /**
+   * Transport Capability Registry backing `execute-mock` sandbox enforcement and
+   * the `/v1/transports` + `/v1/transports/audit` read endpoints. When omitted, a
+   * bootstrap registry seeded with the static mock manifest is created. It is
+   * purely in-memory: no plugin loading, no manifest file reads, no real
+   * network / browser / filesystem / process work.
+   */
+  transportRegistry?: TransportCapabilityRegistry;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -494,7 +587,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const { firewall } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const approvalQueue = options.approvalQueue ?? buildApprovalQueue();
-  const executionEngine = options.executionEngine ?? buildMockExecutionEngine();
+  const transportRegistry =
+    options.transportRegistry ?? buildBootstrapTransportRegistry();
+  const executionEngine =
+    options.executionEngine ?? buildMockExecutionEngine(transportRegistry);
   const sessionManager =
     options.sessionManager ??
     buildBootstrapSessionManager({
@@ -836,6 +932,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       privacyBoundary: privacyView,
       execution
     };
+    // Surface the sandbox decision (allow or block) when the engine enforced it.
+    if (result.sandbox !== undefined) {
+      response.sandbox = toSandboxDecisionView(result.sandbox);
+    }
     return res.status(200).json(response);
   });
   app.all('/v1/capabilities/execute-mock', (_req, res) => {
@@ -885,6 +985,35 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res
       .status(405)
       .json({ error: 'Method not allowed. Use GET /v1/privacy-boundaries.' });
+  });
+
+  // Read-only metadata surface: list the registered transport manifests.
+  // No secrets are exposed — only the declared capability surface of each
+  // adapter (tools, permissions, access flags).
+  app.get('/v1/transports', (_req, res) => {
+    const transports = transportRegistry
+      .listManifests()
+      .map(toTransportManifestView);
+    const body: TransportsHttpResponse = { transports };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/transports', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/transports.' });
+  });
+
+  // Read-only audit surface: the capability/permission surface of every
+  // registered transport. No secrets are exposed.
+  app.get('/v1/transports/audit', (_req, res) => {
+    const audit = transportRegistry.audit().map(toTransportCapabilityAuditView);
+    const body: TransportsAuditHttpResponse = { audit };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/transports/audit', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/transports/audit.' });
   });
 
   // Read-only debug surface: list sessions, optionally filtered by compartment.
@@ -1030,18 +1159,20 @@ export function resolveServerConfig(
 
 function startLocalApiServer(): void {
   const config = resolveServerConfig();
+  const transportRegistry = buildBootstrapTransportRegistry();
   const app = createLocalApiApp({
     firewall: buildBootstrapFirewall(),
     maxBodyBytes: config.maxBodyBytes,
     approvalQueue: buildApprovalQueue(config.approvalTtlMs),
-    executionEngine: buildMockExecutionEngine(),
+    executionEngine: buildMockExecutionEngine(transportRegistry),
     sessionManager: buildBootstrapSessionManager({
       ttlMs: config.sessionTtlMs,
       maxRequests: config.sessionMaxRequests,
       reusePolicy: config.sessionReusePolicy
     }),
     transportPolicyEngine: buildBootstrapTransportPolicyEngine(),
-    privacyBoundaryEngine: buildBootstrapPrivacyBoundaryEngine()
+    privacyBoundaryEngine: buildBootstrapPrivacyBoundaryEngine(),
+    transportRegistry
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console

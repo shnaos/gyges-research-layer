@@ -20,6 +20,11 @@ import {
   TransportAdapter,
   TransportKind
 } from './types.js';
+import type {
+  AdapterSandboxPolicy,
+  SandboxDecision
+} from '../transport-registry/types.js';
+import type { TransportCapabilityRegistry } from '../transport-registry/registry.js';
 
 export interface ExecutionEngineOptions {
   /** Adapters to register at construction time. */
@@ -28,16 +33,35 @@ export interface ExecutionEngineOptions {
   now?: () => number;
   /** Injectable id generator for engine-built results. Defaults to {@link randomUUID}. */
   generateId?: () => string;
+  /**
+   * Optional transport capability registry. When provided (together with a
+   * {@link AdapterSandboxPolicy}), the engine evaluates the adapter sandbox
+   * BEFORE calling `adapter.execute()` and refuses (`blocked`) any violation.
+   *
+   * When omitted the engine behaves exactly as before — no sandbox gating — so
+   * existing callers are unaffected. The registry is purely in-memory and never
+   * performs real network, filesystem, process, or plugin work.
+   */
+  registry?: TransportCapabilityRegistry;
+  /**
+   * Sandbox policy enforced against the registered manifest. Required for the
+   * sandbox gate to run; ignored when {@link registry} is not provided.
+   */
+  sandboxPolicy?: AdapterSandboxPolicy;
 }
 
 export class ExecutionEngine {
   private readonly adapters = new Map<TransportKind, TransportAdapter>();
   private readonly now: () => number;
   private readonly generateId: () => string;
+  private readonly registry?: TransportCapabilityRegistry;
+  private readonly sandboxPolicy?: AdapterSandboxPolicy;
 
   constructor(options: ExecutionEngineOptions = {}) {
     this.now = options.now ?? Date.now;
     this.generateId = options.generateId ?? randomUUID;
+    this.registry = options.registry;
+    this.sandboxPolicy = options.sandboxPolicy;
     for (const adapter of options.adapters ?? []) {
       this.register(adapter);
     }
@@ -61,12 +85,37 @@ export class ExecutionEngine {
    * Execute an authorised request through the adapter bound to its session's
    * transport kind.
    *
-   * - adapter found   → returns `adapter.execute()`
+   * - sandbox blocks  → `blocked` result carrying the {@link SandboxDecision}
+   *   (the adapter is NEVER called)
+   * - adapter found   → returns `adapter.execute()` (with the allow decision
+   *   attached when a registry is wired)
    * - adapter absent  → `blocked` result with a clear reason (fail-closed)
    * - adapter throws  → `failed` result carrying a clean error message
    */
   async execute(request: ExecutionRequest): Promise<ExecutionResult> {
     const kind = request.session.transportKind;
+
+    // Sandbox gate (only when a registry + policy are wired). It verifies the
+    // transport is registered, the tool is supported, and the manifest complies
+    // with the sandbox policy — all BEFORE any adapter is selected or invoked.
+    let sandbox: SandboxDecision | undefined;
+    if (this.registry && this.sandboxPolicy) {
+      sandbox = this.registry.evaluateSandbox(kind, request.tool, this.sandboxPolicy);
+      if (sandbox.action === 'block') {
+        const startedAt = this.now();
+        return {
+          id: this.generateId(),
+          requestId: request.id,
+          status: 'blocked',
+          transportKind: kind,
+          error: 'Sandbox blocked transport execution.',
+          sandbox,
+          startedAt,
+          completedAt: this.now()
+        };
+      }
+    }
+
     const adapter = this.adapters.get(kind);
 
     if (!adapter) {
@@ -77,6 +126,7 @@ export class ExecutionEngine {
         status: 'blocked',
         transportKind: kind,
         error: `No transport adapter registered for kind "${kind}".`,
+        ...(sandbox ? { sandbox } : {}),
         startedAt,
         completedAt: this.now()
       };
@@ -84,7 +134,8 @@ export class ExecutionEngine {
 
     const startedAt = this.now();
     try {
-      return await adapter.execute(request);
+      const result = await adapter.execute(request);
+      return sandbox ? { ...result, sandbox } : result;
     } catch (err) {
       return {
         id: this.generateId(),
@@ -92,6 +143,7 @@ export class ExecutionEngine {
         status: 'failed',
         transportKind: kind,
         error: err instanceof Error ? err.message : 'Transport adapter error.',
+        ...(sandbox ? { sandbox } : {}),
         startedAt,
         completedAt: this.now()
       };
