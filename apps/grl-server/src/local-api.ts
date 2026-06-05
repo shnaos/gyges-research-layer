@@ -2755,7 +2755,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res: express.Response
   ): { filter: CapabilityGraphFilter } | undefined => {
     const filter: CapabilityGraphFilter = {};
-    const readSingle = (key: 'agentId' | 'compartmentId' | 'tool'):
+    const readSingleQueryParam = (key: 'agentId' | 'compartmentId' | 'tool'):
       | string
       | undefined
       | null => {
@@ -2765,13 +2765,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       res.status(400).json({ error: `Query "${key}" must be a single value.` });
       return null;
     };
-    const agentId = readSingle('agentId');
+    const agentId = readSingleQueryParam('agentId');
     if (agentId === null) return undefined;
     if (agentId !== undefined) filter.agentId = agentId;
-    const compartmentId = readSingle('compartmentId');
+    const compartmentId = readSingleQueryParam('compartmentId');
     if (compartmentId === null) return undefined;
     if (compartmentId !== undefined) filter.compartmentId = compartmentId;
-    const tool = readSingle('tool');
+    const tool = readSingleQueryParam('tool');
     if (tool === null) return undefined;
     if (tool !== undefined) filter.tool = tool as CapabilityTool;
     return { filter };
