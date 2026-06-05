@@ -65,6 +65,7 @@ import {
   RuntimeConfigSnapshot,
   RuntimeConfigLoader,
   RuntimeConfigEvent,
+  RuntimeConfigEventType,
   RuntimeConfigValidationError,
   createSnapshot,
   DEFAULT_RUNTIME_CONFIG,
@@ -1408,10 +1409,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
    * Severity of each runtime-config audit event. A failed (re)load is a warning;
    * a successful (re)load is informational.
    */
-  const CONFIG_AUDIT_SEVERITY: Record<
-    'config_loaded' | 'config_reloaded' | 'config_reload_failed' | 'config_validation_failed',
-    EventSeverity
-  > = {
+  const CONFIG_AUDIT_SEVERITY: Record<RuntimeConfigEventType, EventSeverity> = {
     config_loaded: 'info',
     config_reloaded: 'info',
     config_reload_failed: 'warning',
