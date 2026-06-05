@@ -57,6 +57,8 @@ export * from './privacy-boundary/index.js';
 
 export * from './transport-registry/index.js';
 
+export * from './audit/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS
