@@ -19,6 +19,11 @@ import {
   PrivacyBoundaryRule,
   RiskLevel,
   RoutingDecision,
+  RuntimeAnomaly,
+  RuntimeIncident,
+  RuntimeSecurityHeuristicsEngine,
+  IncidentDetector,
+  IncidentStore,
   SandboxDecision,
   SecurityEvent,
   SecurityEventEngine,
@@ -33,6 +38,7 @@ import {
   TransportPolicyEngine,
   TransportPolicyError,
   TransportPolicyRule,
+  BOOTSTRAP_HEURISTIC_RULES,
   BOOTSTRAP_PRIVACY_BOUNDARY_RULES,
   BOOTSTRAP_TRANSPORT_MANIFESTS,
   BOOTSTRAP_TRANSPORT_POLICY_RULES,
@@ -61,6 +67,11 @@ import {
   PrivacyBoundaryRuleView,
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
+  RuntimeAnomaliesHttpResponse,
+  RuntimeAnomalyView,
+  RuntimeIncidentHttpResponse,
+  RuntimeIncidentsHttpResponse,
+  RuntimeIncidentView,
   SandboxDecisionView,
   SecurityEventView,
   SessionsHttpResponse,
@@ -233,6 +244,35 @@ export function buildBootstrapPrivacyBoundaryEngine(): PrivacyBoundaryEngine {
  */
 export function buildSecurityEventEngine(): SecurityEventEngine {
   return new SecurityEventEngine();
+}
+
+/**
+ * Build the Sprint 12 Runtime Security Heuristics Engine seeded with the
+ * bootstrap heuristic rules.
+ *
+ * The engine is deterministic and purely in-memory: it observes the normalised
+ * security-event stream and raises static, threshold-based anomalies. It uses
+ * NO ML, NO AI, NO semantic classification, and performs no network, browser,
+ * DNS, socket, filesystem, process, or durable-persistence work.
+ */
+export function buildRuntimeSecurityHeuristicsEngine(): RuntimeSecurityHeuristicsEngine {
+  const engine = new RuntimeSecurityHeuristicsEngine();
+  for (const rule of BOOTSTRAP_HEURISTIC_RULES) {
+    engine.registerRule(rule);
+  }
+  return engine;
+}
+
+/**
+ * Build the Sprint 12 Incident Detector backed by an in-memory
+ * {@link IncidentStore}.
+ *
+ * It auto-opens runtime incidents from anomalies, aggregates their related
+ * event ids, and suppresses exact immediate duplicates. It is purely in-memory:
+ * no database, no persistence, no network.
+ */
+export function buildIncidentDetector(store?: IncidentStore): IncidentDetector {
+  return new IncidentDetector(store ? { store } : {});
 }
 
 /** Every valid {@link SecurityEventType}, used to validate audit query params. */
@@ -464,6 +504,38 @@ function toSecurityEventView(event: SecurityEvent): SecurityEventView {
 }
 
 /**
+ * Project a detected {@link RuntimeAnomaly} into its public, secret-free HTTP
+ * view. The mapping is a structural pass-through: the anomaly already carries
+ * only minimal, secret-free metadata.
+ */
+function toRuntimeAnomalyView(anomaly: RuntimeAnomaly): RuntimeAnomalyView {
+  const view: RuntimeAnomalyView = {
+    id: anomaly.id,
+    createdAt: anomaly.createdAt,
+    type: anomaly.type,
+    score: anomaly.score,
+    relatedEventIds: [...anomaly.relatedEventIds],
+    summary: anomaly.summary
+  };
+  if (anomaly.metadata !== undefined) view.metadata = anomaly.metadata;
+  return view;
+}
+
+/** Project a {@link RuntimeIncident} into its public, secret-free HTTP view. */
+function toRuntimeIncidentView(incident: RuntimeIncident): RuntimeIncidentView {
+  return {
+    id: incident.id,
+    createdAt: incident.createdAt,
+    updatedAt: incident.updatedAt,
+    severity: incident.severity,
+    status: incident.status,
+    anomalyIds: [...incident.anomalyIds],
+    relatedEventIds: [...incident.relatedEventIds],
+    summary: incident.summary
+  };
+}
+
+/**
  * Parse and validate the `GET /v1/audit/events` query string into an
  * {@link AuditQuery}. Returns `{ error }` on the first invalid parameter so the
  * endpoint can answer `400` — this is purely structural validation.
@@ -590,6 +662,21 @@ export interface LocalApiOptions {
    * created. It performs no persistence, no file write, and no network work.
    */
   securityEventEngine?: SecurityEventEngine;
+  /**
+   * Runtime Security Heuristics Engine (Sprint 12). It passively observes the
+   * security events emitted across the `execute-mock` lifecycle and approval
+   * endpoints, raising static, threshold-based anomalies. When omitted, a
+   * bootstrap engine seeded with the static rules is created. It performs no
+   * network, persistence, AI/ML, or semantic classification work.
+   */
+  heuristicsEngine?: RuntimeSecurityHeuristicsEngine;
+  /**
+   * Incident Detector (Sprint 12) backing `/v1/security/incidents`. It groups
+   * anomalies into auto-opened runtime incidents (suppressing exact immediate
+   * duplicates) in an in-memory {@link IncidentStore}. When omitted, a fresh
+   * detector is created. It performs no persistence or network work.
+   */
+  incidentDetector?: IncidentDetector;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -698,7 +785,7 @@ function toPendingApprovalView(request: ApprovalRequest): PendingApprovalView {
  */
 function handleApprovalDecision(
   approvalQueue: ApprovalQueue,
-  securityEventEngine: SecurityEventEngine,
+  observe: (input: Parameters<SecurityEventEngine['emit']>[0]) => SecurityEvent,
   action: 'approve' | 'reject',
   req: express.Request,
   res: express.Response
@@ -728,7 +815,7 @@ function handleApprovalDecision(
 
   if (result.ok) {
     // Audit the decision WITHOUT the token. Only secret-free metadata is stored.
-    securityEventEngine.emit({
+    observe({
       type: action === 'approve' ? 'approval_approved' : 'approval_rejected',
       severity: 'info',
       agentId: result.request.agentId,
@@ -803,6 +890,36 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     options.privacyBoundaryEngine ?? buildBootstrapPrivacyBoundaryEngine();
   const securityEventEngine =
     options.securityEventEngine ?? buildSecurityEventEngine();
+  const heuristicsEngine =
+    options.heuristicsEngine ?? buildRuntimeSecurityHeuristicsEngine();
+  const incidentDetector =
+    options.incidentDetector ?? buildIncidentDetector();
+
+  /**
+   * Emit a security event AND feed it to the runtime heuristics engine.
+   *
+   * This is the single integration point for Sprint 12: every audited event is
+   * also observed by the heuristics engine, and any resulting anomalies are
+   * processed into incidents. The observer is strictly fail-safe — a heuristic
+   * error is swallowed so it can NEVER break the main `execute-mock` flow or any
+   * approval decision. The engine is a passive observer: it never blocks, never
+   * mutates the request, and never performs network work.
+   */
+  const observeSecurity = (
+    input: Parameters<SecurityEventEngine['emit']>[0]
+  ): SecurityEvent => {
+    const event = securityEventEngine.emit(input);
+    try {
+      const anomalies = heuristicsEngine.ingest(event);
+      if (anomalies.length > 0) {
+        incidentDetector.process(anomalies);
+      }
+    } catch {
+      // Fail-safe: runtime heuristics are observational only and must never
+      // interfere with the primary request flow.
+    }
+    return event;
+  };
 
   const app = express();
   app.disable('x-powered-by');
@@ -965,7 +1082,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Deny: a firewall refusal never triggers execution.
     if (!decision.allowed) {
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'capability_denied',
         severity: 'warning',
         agentId: request.agentId,
@@ -997,7 +1114,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         reason: decision.reason
       });
       // Audit the pending approval WITHOUT the one-time token.
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'approval_pending',
         severity: 'info',
         agentId: request.agentId,
@@ -1021,7 +1138,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     }
 
     // Allowed without confirmation.
-    securityEventEngine.emit({
+    observeSecurity({
       type: 'capability_allowed',
       severity: 'info',
       agentId: request.agentId,
@@ -1077,7 +1194,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       throw err;
     }
 
-    securityEventEngine.emit({
+    observeSecurity({
       type: 'routing_resolved',
       severity: 'info',
       agentId: request.agentId,
@@ -1114,7 +1231,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Privacy block: fail-closed. No session is created and nothing executes.
     if (privacy.action === 'block') {
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'privacy_boundary_blocked',
         severity: 'warning',
         agentId: request.agentId,
@@ -1148,7 +1265,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         sanitizedInput: decision.sanitizedInput,
         reason: privacy.reason
       });
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'approval_pending',
         severity: 'info',
         agentId: request.agentId,
@@ -1176,7 +1293,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // A privacy-driven rotation is its own audited signal.
     if (privacy.action === 'rotate_session') {
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'privacy_boundary_rotation',
         severity: 'info',
         agentId: request.agentId,
@@ -1203,7 +1320,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Audit the session lifecycle: a rotation, or a freshly-minted session.
     if (mustRotateSession) {
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'session_rotated',
         severity: 'info',
         agentId: request.agentId,
@@ -1214,7 +1331,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         metadata: { transportKind: session.transportKind }
       });
     } else if (sessionManager.size() > sessionsBefore) {
-      securityEventEngine.emit({
+      observeSecurity({
         type: 'session_created',
         severity: 'info',
         agentId: request.agentId,
@@ -1243,7 +1360,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     };
 
     // Audit the start of execution before invoking the transport.
-    securityEventEngine.emit({
+    observeSecurity({
       type: 'execution_started',
       severity: 'info',
       agentId: request.agentId,
@@ -1277,7 +1394,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       : [];
     if (result.sandbox !== undefined) {
       if (result.sandbox.action === 'block') {
-        securityEventEngine.emit({
+        observeSecurity({
           type: 'sandbox_blocked',
           severity: 'warning',
           agentId: request.agentId,
@@ -1293,7 +1410,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           }
         });
       } else {
-        securityEventEngine.emit({
+        observeSecurity({
           type: 'sandbox_allowed',
           severity: 'info',
           agentId: request.agentId,
@@ -1318,7 +1435,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           : 'execution_blocked';
     const terminalSeverity: EventSeverity =
       result.status === 'success' ? 'info' : 'warning';
-    securityEventEngine.emit({
+    observeSecurity({
       type: terminalType,
       severity: terminalSeverity,
       agentId: request.agentId,
@@ -1494,6 +1611,80 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       .json({ error: 'Method not allowed. Use GET /v1/audit/events/:id.' });
   });
 
+  // Read-only runtime-security surface (Sprint 12): list detected anomalies and
+  // the auto-opened incidents they produced, fetch a single incident, and close
+  // one. Responses carry only normalised, secret-free metadata — NEVER a token,
+  // secret, raw header, raw env, raw stack trace, or raw request input.
+  app.get('/v1/security/anomalies', (_req, res) => {
+    const anomalies: RuntimeAnomalyView[] = heuristicsEngine
+      .queryAnomalies()
+      .map(toRuntimeAnomalyView);
+    const body: RuntimeAnomaliesHttpResponse = { anomalies };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/security/anomalies', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/security/anomalies.' });
+  });
+
+  app.get('/v1/security/incidents', (req, res) => {
+    const rawStatus = req.query.status;
+    let status: 'open' | 'closed' | undefined;
+    if (rawStatus !== undefined) {
+      if (rawStatus === 'open' || rawStatus === 'closed') {
+        status = rawStatus;
+      } else {
+        return res
+          .status(400)
+          .json({ error: 'Query "status" must be "open" or "closed".' });
+      }
+    }
+    const incidents: RuntimeIncidentView[] = incidentDetector
+      .listIncidents(status)
+      .map(toRuntimeIncidentView);
+    const body: RuntimeIncidentsHttpResponse = { incidents };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/security/incidents', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/security/incidents.' });
+  });
+
+  app.get('/v1/security/incidents/:id', (req, res) => {
+    const incident = incidentDetector.getIncident(req.params.id);
+    if (!incident) {
+      return res.status(404).json({ error: 'Runtime incident not found.' });
+    }
+    const body: RuntimeIncidentHttpResponse = {
+      incident: toRuntimeIncidentView(incident)
+    };
+    return res.status(200).json(body);
+  });
+
+  app.post('/v1/security/incidents/:id/close', (req, res) => {
+    const existing = incidentDetector.getIncident(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Runtime incident not found.' });
+    }
+    const incident = incidentDetector.closeIncident(req.params.id);
+    const body: RuntimeIncidentHttpResponse = {
+      incident: toRuntimeIncidentView(incident)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/security/incidents/:id/close', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use POST /v1/security/incidents/:id/close.'
+    });
+  });
+  app.all('/v1/security/incidents/:id', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/security/incidents/:id.'
+    });
+  });
+
   app.get('/v1/approvals/pending', (_req, res) => {
     const pending: PendingApprovalView[] = approvalQueue
       .listPending()
@@ -1508,7 +1699,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   });
 
   app.post('/v1/approvals/:id/approve', (req, res) =>
-    handleApprovalDecision(approvalQueue, securityEventEngine, 'approve', req, res)
+    handleApprovalDecision(approvalQueue, observeSecurity, 'approve', req, res)
   );
   app.all('/v1/approvals/:id/approve', (_req, res) => {
     res
@@ -1517,7 +1708,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   });
 
   app.post('/v1/approvals/:id/reject', (req, res) =>
-    handleApprovalDecision(approvalQueue, securityEventEngine, 'reject', req, res)
+    handleApprovalDecision(approvalQueue, observeSecurity, 'reject', req, res)
   );
   app.all('/v1/approvals/:id/reject', (_req, res) => {
     res
