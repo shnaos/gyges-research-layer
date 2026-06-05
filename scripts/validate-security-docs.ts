@@ -45,9 +45,8 @@ const README_MUST_CONTAIN: string[] = [
 // ─── Forbidden claims across all security docs ─────────────────────────────
 //
 // These patterns flag POSITIVE security claims that would be false promises.
-// Context-aware: a line is only flagged if it does not contain a negating
-// word BEFORE the matched phrase (e.g., "does not guarantee anonymity" is fine;
-// "guarantees anonymity" is not).
+// All patterns require "GRL" as subject to avoid matching negation contexts
+// (e.g., "GRL does not replace Tor" does not match /\bGRL\s+replaces?\s+Tor\b/).
 
 const FORBIDDEN_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   {
@@ -83,7 +82,7 @@ const FORBIDDEN_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
     reason: 'GRL must not claim to guarantee OPSEC',
   },
   {
-    pattern: /\bGRL\s+classif(?:ies|y)\s+(?:semantic|malicious)/i,
+    pattern: /\bGRL\s+classif(?:ies|y|ication)\s+(?:semantic|malicious)/i,
     reason: 'GRL must not claim semantic maliciousness classification',
   },
 ];
@@ -254,19 +253,18 @@ function checkNoBrowserSupportClaims(): CheckResult[] {
   return results;
 }
 
-function checkNoAnonymityGuaranteeClaims(): CheckResult[] {
+function checkForbiddenClaimsAllDocs(): CheckResult[] {
   const results: CheckResult[] = [];
-  const allDocs = REQUIRED_DOCS;
 
-  for (const doc of allDocs) {
+  // Check ALL docs (not just security docs) for forbidden claims
+  for (const doc of REQUIRED_DOCS) {
     if (!exists(doc)) continue;
     const content = readFile(doc);
-    // Only flag positive claims of anonymity/OPSEC guarantees
     for (const { pattern, reason } of FORBIDDEN_PATTERNS) {
       if (pattern.test(content)) {
         results.push({
           ok: false,
-          message: `✗ Forbidden anonymity guarantee in ${doc}: ${reason}`,
+          message: `✗ Forbidden claim in ${doc}: ${reason}`,
         });
       }
     }
@@ -275,7 +273,7 @@ function checkNoAnonymityGuaranteeClaims(): CheckResult[] {
   if (results.length === 0) {
     results.push({
       ok: true,
-      message: '✓ No anonymity guarantee claims found',
+      message: '✓ No forbidden security claims found in any doc',
     });
   }
 
@@ -305,7 +303,7 @@ function main(): void {
     ['No forbidden content in specific docs', checkDocForbiddenContent],
     ['No Tor support claims', checkNoTorSupportClaims],
     ['No browser support claims', checkNoBrowserSupportClaims],
-    ['No anonymity guarantee claims', checkNoAnonymityGuaranteeClaims],
+    ['No forbidden claims across all docs', checkForbiddenClaimsAllDocs],
   ];
 
   let allPassed = true;
