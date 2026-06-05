@@ -87,22 +87,6 @@ export interface SecurityEvent {
   metadata?: Record<string, unknown>;
 }
 
-/**
- * A correlated group of {@link SecurityEvent}s that together describe a runtime
- * security incident.
- *
- * Sprint 11 ships the contract only; the engine does not auto-open incidents.
- * It is provided so future sprints can group events without a breaking change.
- */
-export interface RuntimeIncident {
-  id: string;
-  createdAt: number;
-  severity: EventSeverity;
-  eventIds: string[];
-  summary: string;
-  status: 'open' | 'closed';
-}
-
 /** A single entry in the audit trail, wrapping one {@link SecurityEvent}. */
 export interface AuditTrailEntry {
   event: SecurityEvent;

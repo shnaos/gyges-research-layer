@@ -59,6 +59,8 @@ export * from './transport-registry/index.js';
 
 export * from './audit/index.js';
 
+export * from './runtime-security/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

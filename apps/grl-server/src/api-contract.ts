@@ -411,3 +411,75 @@ export interface AuditEventsHttpResponse {
 export interface AuditEventHttpResponse {
   event: SecurityEventView;
 }
+
+/** Coarse, ordered security score of a runtime anomaly. */
+export type SecurityScoreView = 'low' | 'medium' | 'high' | 'critical';
+
+/** Normalised type of a runtime anomaly. */
+export type RuntimeAnomalyTypeView =
+  | 'repeated_denied_capabilities'
+  | 'sandbox_violation_attempts'
+  | 'privacy_boundary_violations'
+  | 'rapid_session_rotation'
+  | 'high_risk_execution_pattern'
+  | 'approval_rejection_pattern';
+
+/**
+ * Public, secret-free view of a detected runtime anomaly.
+ *
+ * Returned by `GET /v1/security/anomalies`. It carries only normalised,
+ * minimal metadata (anomaly/event types, counts, severities, timestamps, ids) —
+ * NEVER an approval token, secret, raw HTTP header, raw environment, raw stack
+ * trace, or raw request input.
+ */
+export interface RuntimeAnomalyView {
+  id: string;
+  createdAt: number;
+  type: RuntimeAnomalyTypeView;
+  score: SecurityScoreView;
+  relatedEventIds: string[];
+  summary: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Response body for `GET /v1/security/anomalies`. */
+export interface RuntimeAnomaliesHttpResponse {
+  anomalies: RuntimeAnomalyView[];
+}
+
+/** Severity of a runtime incident. */
+export type IncidentSeverityView = 'info' | 'warning' | 'critical';
+
+/** Lifecycle status of a runtime incident. */
+export type IncidentStatusView = 'open' | 'closed';
+
+/**
+ * Public, secret-free view of a runtime incident.
+ *
+ * Returned by `GET /v1/security/incidents`, `GET /v1/security/incidents/:id`,
+ * and `POST /v1/security/incidents/:id/close`. Pure correlation metadata — no
+ * secrets, tokens, or raw input.
+ */
+export interface RuntimeIncidentView {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  severity: IncidentSeverityView;
+  status: IncidentStatusView;
+  anomalyIds: string[];
+  relatedEventIds: string[];
+  summary: string;
+}
+
+/** Response body for `GET /v1/security/incidents`. */
+export interface RuntimeIncidentsHttpResponse {
+  incidents: RuntimeIncidentView[];
+}
+
+/**
+ * Response body for `GET /v1/security/incidents/:id` and
+ * `POST /v1/security/incidents/:id/close`.
+ */
+export interface RuntimeIncidentHttpResponse {
+  incident: RuntimeIncidentView;
+}

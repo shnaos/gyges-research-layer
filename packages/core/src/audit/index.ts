@@ -10,7 +10,6 @@ export type {
   EventSeverity,
   SecurityEventType,
   SecurityEvent,
-  RuntimeIncident,
   AuditTrailEntry,
   AuditQuery
 } from './types.js';
