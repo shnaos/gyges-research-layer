@@ -15,7 +15,8 @@
     "start": "npm --prefix apps/grl-server run dev",
     "dev:server": "npm --prefix apps/grl-server run dev:local-api",
     "build:server": "npm --prefix apps/grl-server run build",
-    "build:cli": "npm --prefix apps/grl-cli run build"
+    "build:cli": "npm --prefix apps/grl-cli run build",
+    "validate:security-docs": "tsx scripts/validate-security-docs.ts"
   },
   "license": "MIT",
   "dependencies": {
