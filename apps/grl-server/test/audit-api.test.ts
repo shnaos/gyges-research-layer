@@ -147,7 +147,12 @@ describe('GRL Local API — audit: firewall deny', () => {
 
     const res = await listEvents(base);
     const types = res.json.events.map((e: any) => e.type);
-    expect(types).toEqual(['capability_denied']);
+    // A firewall deny lowers the compartment's trust, which emits a
+    // trust_score_changed audit event (Sprint 14). No routing/execution occurs.
+    expect(types).toContain('capability_denied');
+    expect(types).not.toContain('routing_resolved');
+    expect(types).not.toContain('execution_started');
+    expect(types).not.toContain('execution_succeeded');
   });
 });
 

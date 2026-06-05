@@ -58,7 +58,11 @@ export type SecurityEventType =
   | 'cooldown_applied'
   | 'temporary_block_applied'
   | 'risk_escalated'
-  | 'adaptive_defense_triggered';
+  | 'adaptive_defense_triggered'
+  | 'trust_score_changed'
+  | 'compartment_restricted'
+  | 'compartment_quarantined'
+  | 'trust_recovered';
 
 /**
  * A single, immutable security event.
