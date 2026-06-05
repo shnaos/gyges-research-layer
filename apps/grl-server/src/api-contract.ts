@@ -404,6 +404,7 @@ export interface PrivacyBoundariesHttpResponse {
 export type AdapterSandboxPermissionView =
   | 'execute_mock'
   | 'network_disabled'
+  | 'network_explicit_allowed'
   | 'no_filesystem'
   | 'no_process_spawn'
   | 'no_env_access';
@@ -829,3 +830,27 @@ export interface RuntimeReloadHttpResponse {
   loadedAt: number;
   checksum: string;
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 17 — Real execution endpoint (POST /v1/capabilities/execute).
+//
+// Differs from execute-mock: uses real transport routing configured at runtime.
+// Falls back to mock when no real transport is configured.
+// ---------------------------------------------------------------------------
+
+/**
+ * Request body for `POST /v1/capabilities/execute`.
+ *
+ * Structurally identical to the execute-mock request: the same validation and
+ * firewall pipeline runs; only the transport selection differs.
+ */
+export type ExecuteCapabilityHttpRequest = EvaluateCapabilityHttpRequest;
+
+/**
+ * Response body for `POST /v1/capabilities/execute`.
+ *
+ * Identical shape to {@link ExecuteMockCapabilityHttpResponse} but explicitly
+ * named for the real execute endpoint. The `transportKind` field in the
+ * execution block will be `"searxng"` when a real transport is used.
+ */
+export type ExecuteCapabilityHttpResponse = ExecuteMockCapabilityHttpResponse;

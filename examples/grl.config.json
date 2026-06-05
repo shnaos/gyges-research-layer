@@ -183,6 +183,21 @@
       "allowFilesystem": false,
       "allowProcessSpawn": false,
       "allowBrowser": false
+    },
+    {
+      "transportKind": "searxng",
+      "allowNetwork": true,
+      "allowFilesystem": false,
+      "allowProcessSpawn": false,
+      "allowBrowser": false
     }
-  ]
+  ],
+  "transports": {
+    "searxng": {
+      "baseUrl": "http://127.0.0.1:8080",
+      "timeoutMs": 5000,
+      "maxResults": 10,
+      "enabled": false
+    }
+  }
 }

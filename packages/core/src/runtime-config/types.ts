@@ -34,6 +34,7 @@ import {
   DependencyIsolationPolicy
 } from '../capability-graph/types.js';
 import { TransportKind } from '../execution/types.js';
+import type { SearXngTransportConfig } from '../transports/searxng/types.js';
 
 export type { CapabilityPolicy } from '../capability-firewall/types.js';
 export type { TransportPolicyRule } from '../transport-policy/types.js';
@@ -47,6 +48,7 @@ export type {
   DependencyIsolationPolicy
 } from '../capability-graph/types.js';
 export type { TransportKind } from '../execution/types.js';
+export type { SearXngTransportConfig } from '../transports/searxng/types.js';
 
 /**
  * One identity compartment described by configuration.
@@ -121,6 +123,18 @@ export interface RuntimeConfig {
   isolationPolicies: DependencyIsolationPolicy[];
 
   sandboxPolicies: RuntimeSandboxPolicy[];
+
+  /**
+   * Sprint 17 — transport-specific runtime configuration.
+   *
+   * Each key corresponds to a transport kind. The presence of a key does NOT
+   * enable the transport; the transport must have `enabled: true` in its config.
+   * Absent key → disabled (fail-closed). The field is optional so existing
+   * configs without it remain valid.
+   */
+  transports?: {
+    searxng?: SearXngTransportConfig;
+  };
 }
 
 /**
