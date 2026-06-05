@@ -118,7 +118,10 @@ export class IncidentDetector {
         }
       }
 
-      const summary = `Runtime incident: ${group[0].type} (${group.length} anomaly/anomalies).`;
+      const count = group.length;
+      const summary = `Runtime incident: ${group[0].type} (${count} ${
+        count === 1 ? 'anomaly' : 'anomalies'
+      }).`;
       const signature = incidentSignature(severity, summary, relatedEventIds);
 
       // Suppress an exact immediate duplicate: an identical, still-open incident.
