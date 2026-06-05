@@ -349,6 +349,17 @@ export function buildCompartmentTrustEngine(): CompartmentTrustEngine {
   return new CompartmentTrustEngine();
 }
 
+/**
+ * The subset of {@link SecurityEventType}s emitted by the trust layer itself.
+ * Kept as a single shared type so the severity table and the emit helper stay
+ * in sync if new trust audit events are added.
+ */
+type TrustAuditEventType =
+  | 'trust_score_changed'
+  | 'compartment_restricted'
+  | 'compartment_quarantined'
+  | 'trust_recovered';
+
 /** Every valid {@link SecurityEventType}, used to validate audit query params. */
 export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'capability_allowed',
@@ -1119,10 +1130,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
    * Severity of each trust audit event. A degradation into a restricted /
    * quarantined band is more urgent than an ordinary score change or recovery.
    */
-  const TRUST_AUDIT_SEVERITY: Record<
-    'trust_score_changed' | 'compartment_restricted' | 'compartment_quarantined' | 'trust_recovered',
-    EventSeverity
-  > = {
+  const TRUST_AUDIT_SEVERITY: Record<TrustAuditEventType, EventSeverity> = {
     trust_score_changed: 'info',
     compartment_restricted: 'warning',
     compartment_quarantined: 'critical',
@@ -1142,11 +1150,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
    * audit loop. Metadata is minimal and secret-free.
    */
   const emitTrustAudit = (
-    type:
-      | 'trust_score_changed'
-      | 'compartment_restricted'
-      | 'compartment_quarantined'
-      | 'trust_recovered',
+    type: TrustAuditEventType,
     compartmentId: string,
     score: number,
     level: string,

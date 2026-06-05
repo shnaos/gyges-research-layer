@@ -324,7 +324,7 @@ describe('CompartmentTrustEngine — determinism & immutability', () => {
     expect(profile.events[0].createdAt).toBe(1000);
   });
 
-  it('honours a caller-supplied createdAt', () => {
+  it('honors a caller-supplied createdAt', () => {
     const engine = deterministicEngine();
     const profile = record(engine, { type: 'clean_execution', createdAt: 5555 });
     expect(profile.events[0].createdAt).toBe(5555);
