@@ -163,6 +163,7 @@ export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
   defense?: DefenseDecisionView;
+  capabilityGraph?: CapabilityPathDecisionView;
   trust?: TrustView;
   routing?: RoutingDecisionView;
   privacyBoundary?: PrivacyBoundaryDecisionView;
@@ -506,7 +507,11 @@ export type SecurityEventTypeView =
   | 'trust_score_changed'
   | 'compartment_restricted'
   | 'compartment_quarantined'
-  | 'trust_recovered';
+  | 'trust_recovered'
+  | 'capability_graph_allowed'
+  | 'capability_graph_blocked'
+  | 'capability_graph_approval_required'
+  | 'capability_graph_rotation_required';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -658,4 +663,127 @@ export interface ReputationProfileHttpResponse {
 /** Response body for `GET /v1/trust/events`. */
 export interface ReputationEventsHttpResponse {
   events: ReputationEventView[];
+}
+
+/** Kind of an execution-capability graph node (Sprint 15). */
+export type CapabilityNodeKindView =
+  | 'request'
+  | 'capability'
+  | 'approval'
+  | 'execution'
+  | 'sandbox'
+  | 'privacy_boundary';
+
+/** Relation expressed by a capability graph edge (Sprint 15). */
+export type CapabilityEdgeRelationView =
+  | 'requested'
+  | 'approved'
+  | 'executed'
+  | 'blocked'
+  | 'depends_on'
+  | 'transitioned_to';
+
+/** Coarse, ordered risk classification of a whole execution path (Sprint 15). */
+export type ExecutionPathRiskView = 'low' | 'medium' | 'high' | 'blocked';
+
+/** Action a capability path decision carries (Sprint 15). */
+export type CapabilityPathActionView =
+  | 'allow'
+  | 'require_approval'
+  | 'force_rotation'
+  | 'block';
+
+/**
+ * Public, secret-free view of a single execution-capability graph node.
+ *
+ * Returned by `GET /v1/capability-graph/nodes`. Pure metadata (kind, optional
+ * agent / compartment / tool / risk level, timestamp) — never a token, secret,
+ * or raw request input.
+ */
+export interface CapabilityNodeView {
+  id: string;
+  kind: CapabilityNodeKindView;
+  agentId?: string;
+  compartmentId?: string;
+  tool?: string;
+  riskLevel?: RiskLevelView;
+  createdAt: number;
+}
+
+/**
+ * Public, secret-free view of a single execution-capability graph edge.
+ *
+ * Returned by `GET /v1/capability-graph/edges`. Pure metadata — never a token,
+ * secret, or raw request input.
+ */
+export interface CapabilityEdgeView {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relation: CapabilityEdgeRelationView;
+  createdAt: number;
+}
+
+/**
+ * Public, secret-free view of a capability transition rule.
+ *
+ * Returned by `GET /v1/capability-graph/transition-rules`. Pure configuration
+ * metadata.
+ */
+export interface CapabilityTransitionRuleView {
+  id: string;
+  fromTool: string;
+  toTool: string;
+  maxAllowedRisk: ExecutionPathRiskView;
+  actionOnViolation: CapabilityPathActionView;
+  enabled: boolean;
+}
+
+/**
+ * Public, secret-free view of a dependency-isolation policy.
+ *
+ * Returned by `GET /v1/capability-graph/isolation-policies`. Pure configuration
+ * metadata.
+ */
+export interface DependencyIsolationPolicyView {
+  id: string;
+  compartmentId: string;
+  maxPathLength: number;
+  forbidCrossToolEscalation: boolean;
+  requireApprovalOnToolChange: boolean;
+  blockOnHighRiskPath: boolean;
+  enabled: boolean;
+}
+
+/**
+ * Public, secret-free view of a capability path decision attached to an
+ * execute-mock response (Sprint 15). Pure normalised metadata — never a token,
+ * secret, or raw request input.
+ */
+export interface CapabilityPathDecisionView {
+  action: CapabilityPathActionView;
+  risk: ExecutionPathRiskView;
+  reason: string;
+  relatedNodeIds: string[];
+  relatedEdgeIds: string[];
+}
+
+/** Response body for `GET /v1/capability-graph/nodes`. */
+export interface CapabilityGraphNodesHttpResponse {
+  nodes: CapabilityNodeView[];
+}
+
+/** Response body for `GET /v1/capability-graph/edges`. */
+export interface CapabilityGraphEdgesHttpResponse {
+  edges: CapabilityEdgeView[];
+}
+
+/** Response body for `GET /v1/capability-graph/transition-rules`. */
+export interface CapabilityGraphTransitionRulesHttpResponse {
+  transitionRules: CapabilityTransitionRuleView[];
+}
+
+/** Response body for `GET /v1/capability-graph/isolation-policies`. */
+export interface CapabilityGraphIsolationPoliciesHttpResponse {
+  isolationPolicies: DependencyIsolationPolicyView[];
 }
