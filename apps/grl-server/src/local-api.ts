@@ -3961,7 +3961,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   app.all('/v1/runtime/profile', (_req, res) => {
     res
       .status(405)
-      .json({ error: 'Method not allowed. Use GET /v1/runtime/profile or POST /v1/runtime/profile/:name.' });
+      .json({ error: 'Method not allowed. Use GET /v1/runtime/profile.' });
   });
 
   // POST /v1/runtime/profile/:name — local profile switch (no cloud, no remote sync).

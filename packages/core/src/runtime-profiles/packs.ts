@@ -428,13 +428,13 @@ export const PRIVACY_HARDENING_PACK: PolicyPack = {
  * trust-hardening-pack
  *
  * Conservative trust thresholds: lower baseline score, higher quarantine and
- * restriction bands, so compartments are penalised more quickly.
+ * restriction bands, so compartments are penalized more quickly.
  */
 export const TRUST_HARDENING_PACK: PolicyPack = {
   id: 'trust-hardening-pack',
   description:
     'Conservative trust thresholds. Baseline 65 (vs 70), quarantine at 29 (vs 19), ' +
-    'restrict at 54 (vs 49). Compartments penalised more quickly.',
+    'restrict at 54 (vs 49). Compartments penalized more quickly.',
   trustPolicies: {
     enabled: true,
     baselineScore: 65,
