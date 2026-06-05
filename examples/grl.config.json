@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "compartments": [
+    {
+      "id": "research",
+      "description": "Default research compartment",
+      "enabled": true
+    }
+  ],
+  "firewallPolicies": [
+    {
+      "agentId": "local-agent",
+      "compartmentId": "research",
+      "allowedTools": [
+        "search",
+        "fetch_html",
+        "fetch_json"
+      ],
+      "maxRiskLevel": "low"
+    },
+    {
+      "agentId": "local-agent",
+      "compartmentId": "research",
+      "allowedTools": [
+        "fetch_html"
+      ],
+      "maxRiskLevel": "medium",
+      "requiresConfirmationAbove": "low"
+    }
+  ],
+  "transportPolicies": [
+    {
+      "tool": "search",
+      "riskLevel": "low",
+      "preferredTransport": "mock",
+      "isolationPolicy": {
+        "level": "session",
+        "forceRotateOnHighRisk": true,
+        "forbidSessionReuse": false,
+        "allowCrossToolReuse": true
+      }
+    },
+    {
+      "tool": "fetch_html",
+      "riskLevel": "medium",
+      "preferredTransport": "mock",
+      "isolationPolicy": {
+        "level": "strict",
+        "forceRotateOnHighRisk": true,
+        "forbidSessionReuse": true,
+        "allowCrossToolReuse": false
+      }
+    }
+  ],
+  "privacyBoundaryRules": [
+    {
+      "id": "research-self",
+      "sourceCompartmentId": "research",
+      "targetCompartmentId": "research",
+      "maxAllowedRisk": "low",
+      "actionOnViolation": "require_approval"
+    }
+  ],
+  "adaptiveDefensePolicies": [
+    {
+      "id": "repeated-denied-defense",
+      "triggerAnomalyTypes": [
+        "repeated_denied_capabilities"
+      ],
+      "triggerIncidentSeverities": [
+        "warning"
+      ],
+      "resultingAction": "cooldown",
+      "cooldownMs": 60000,
+      "enabled": true
+    },
+    {
+      "id": "sandbox-defense",
+      "triggerAnomalyTypes": [
+        "sandbox_violation_attempts"
+      ],
+      "triggerIncidentSeverities": [
+        "critical"
+      ],
+      "resultingAction": "temporary_block",
+      "cooldownMs": 300000,
+      "enabled": true
+    },
+    {
+      "id": "privacy-boundary-defense",
+      "triggerAnomalyTypes": [
+        "privacy_boundary_violations"
+      ],
+      "triggerIncidentSeverities": [
+        "critical"
+      ],
+      "resultingAction": "require_approval",
+      "enabled": true
+    },
+    {
+      "id": "approval-rejection-defense",
+      "triggerAnomalyTypes": [
+        "approval_rejection_pattern"
+      ],
+      "triggerIncidentSeverities": [
+        "warning"
+      ],
+      "resultingAction": "cooldown",
+      "cooldownMs": 120000,
+      "enabled": true
+    },
+    {
+      "id": "risk-escalation-defense",
+      "triggerAnomalyTypes": [
+        "high_risk_execution_pattern"
+      ],
+      "triggerIncidentSeverities": [
+        "warning",
+        "critical"
+      ],
+      "resultingAction": "escalate_risk",
+      "escalationRiskLevel": "high",
+      "enabled": true
+    }
+  ],
+  "rateLimitPolicies": [
+    {
+      "id": "agent-search-rate",
+      "scope": "agent",
+      "maxRequests": 10,
+      "windowMs": 60000,
+      "action": "cooldown",
+      "enabled": true
+    },
+    {
+      "id": "tool-fetch-html-rate",
+      "scope": "tool",
+      "maxRequests": 5,
+      "windowMs": 60000,
+      "action": "require_approval",
+      "enabled": true
+    }
+  ],
+  "trustPolicies": {
+    "enabled": true,
+    "baselineScore": 70,
+    "quarantinedThreshold": 19,
+    "restrictedThreshold": 49
+  },
+  "graphTransitionRules": [
+    {
+      "id": "search-to-fetch-html",
+      "fromTool": "search",
+      "toTool": "fetch_html",
+      "maxAllowedRisk": "medium",
+      "actionOnViolation": "require_approval",
+      "enabled": true
+    },
+    {
+      "id": "fetch-html-to-fetch-json",
+      "fromTool": "fetch_html",
+      "toTool": "fetch_json",
+      "maxAllowedRisk": "medium",
+      "actionOnViolation": "require_approval",
+      "enabled": true
+    }
+  ],
+  "isolationPolicies": [
+    {
+      "id": "research-default-dependency-isolation",
+      "compartmentId": "research",
+      "maxPathLength": 5,
+      "forbidCrossToolEscalation": true,
+      "requireApprovalOnToolChange": true,
+      "blockOnHighRiskPath": true,
+      "enabled": true
+    }
+  ],
+  "sandboxPolicies": [
+    {
+      "transportKind": "mock",
+      "allowNetwork": false,
+      "allowFilesystem": false,
+      "allowProcessSpawn": false,
+      "allowBrowser": false
+    }
+  ]
+}
