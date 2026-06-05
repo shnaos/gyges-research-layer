@@ -77,7 +77,11 @@ import {
   BOOTSTRAP_RATE_LIMIT_POLICIES,
   BOOTSTRAP_TRANSPORT_MANIFESTS,
   BOOTSTRAP_TRANSPORT_POLICY_RULES,
-  STRICT_SANDBOX_POLICY
+  STRICT_SANDBOX_POLICY,
+  SEARXNG_TRANSPORT_MANIFEST,
+  SEARXNG_SANDBOX_POLICY,
+  buildSearXngAdapter,
+  SearXngConfigError
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -142,7 +146,8 @@ import {
   TransportPolicyRuleView,
   TrustView,
   TransportsAuditHttpResponse,
-  TransportsHttpResponse
+  TransportsHttpResponse,
+  ExecuteCapabilityHttpResponse
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -243,6 +248,39 @@ export function buildMockExecutionEngine(
     ...(registry
       ? { registry, sandboxPolicy: STRICT_SANDBOX_POLICY }
       : {})
+  });
+}
+
+/**
+ * Sprint 17 — Build the real execution engine for the /v1/capabilities/execute
+ * endpoint.
+ *
+ * When the active runtime config has a valid, enabled SearXNG config, the engine
+ * is built with a SearXNG adapter and the SEARXNG_SANDBOX_POLICY (which permits
+ * network access). When SearXNG is disabled or absent, returns `null` so the
+ * caller can fall back to the mock engine.
+ *
+ * Returns `null` when:
+ *   - `config.transports?.searxng` is absent
+ *   - `enabled: false`
+ *
+ * Throws {@link SearXngConfigError} when the config is present but structurally
+ * invalid (e.g. non-loopback baseUrl, invalid timeout).
+ */
+export function buildSearXngExecutionEngine(
+  config: RuntimeConfig
+): ExecutionEngine | null {
+  const searxngConfig = config.transports?.searxng;
+  const adapter = buildSearXngAdapter(searxngConfig);
+  if (!adapter) return null;
+
+  const registry = new TransportCapabilityRegistry();
+  registry.registerManifest(SEARXNG_TRANSPORT_MANIFEST);
+
+  return new ExecutionEngine({
+    adapters: [adapter],
+    registry,
+    sandboxPolicy: SEARXNG_SANDBOX_POLICY
   });
 }
 
@@ -1385,6 +1423,26 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     buildCapabilityGraphEngineFromConfig(activeSnapshot.config);
 
   /**
+   * Sprint 17 — real execution engine for POST /v1/capabilities/execute.
+   *
+   * Built from the active runtime config's `transports.searxng` section. If
+   * SearXNG is enabled, this is a SearXNG-only engine with SEARXNG_SANDBOX_POLICY.
+   * If SearXNG is absent or disabled, `realSearXngEngine` is `null` and the
+   * execute endpoint falls back to the mock engine.
+   *
+   * Rebuilt on every config reload. Invalid configs are logged and ignored
+   * (the previous engine is preserved — fail-safe for the searxng engine, since
+   * the mock fallback is always available).
+   */
+  let realSearXngEngine: ExecutionEngine | null = (() => {
+    try {
+      return buildSearXngExecutionEngine(activeSnapshot.config);
+    } catch {
+      return null;
+    }
+  })();
+
+  /**
    * Rebuild the config-derived policy engines from a freshly reloaded snapshot.
    * Stateful components (sessions, approvals, audit, trust) are intentionally
    * preserved across a reload — only the deterministic policy surfaces change.
@@ -1403,6 +1461,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       snapshot.config.adaptiveDefensePolicies
     );
     capabilityGraphEngine = buildCapabilityGraphEngineFromConfig(snapshot.config);
+    try {
+      realSearXngEngine = buildSearXngExecutionEngine(snapshot.config);
+    } catch {
+      // Fail-safe: an invalid searxng config on reload doesn't crash the server.
+      // The previous engine is preserved.
+    }
   };
 
   /**
@@ -2657,6 +2721,648 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   app.all('/v1/capabilities/execute-mock', (_req, res) => {
     res.status(405).json({
       error: 'Method not allowed. Use POST /v1/capabilities/execute-mock.'
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Sprint 17 — POST /v1/capabilities/execute (real transport routing)
+  //
+  // Runs the same full pipeline as execute-mock (capability graph → trust →
+  // defense → firewall → routing → privacy → session) but dispatches to the
+  // transport resolved by the Transport Policy Engine:
+  //   - mock → mock transport (same as execute-mock)
+  //   - searxng → SearXNG transport adapter (requires enabled runtime config)
+  //   - other → fail-closed (denied)
+  //
+  // Security constraints identical to execute-mock apply here. Additionally:
+  //   - SearXNG must be explicitly enabled in runtime config (fail-closed)
+  //   - No real network if SearXNG is disabled
+  //   - Sandbox evaluated against SEARXNG_SANDBOX_POLICY for searxng transport
+  // ---------------------------------------------------------------------------
+  app.post('/v1/capabilities/execute', async (req, res) => {
+    if (!req.is('application/json')) {
+      return res
+        .status(400)
+        .json({ error: 'Content-Type must be application/json.' });
+    }
+
+    const validated = validateEvaluateBody(req.body);
+    if ('error' in validated) {
+      return res.status(400).json({ error: validated.error });
+    }
+
+    const { request } = validated;
+    const requestId = randomUUID();
+    const inputDescriptor = describeInput(request.input);
+
+    let defenseView: DefenseDecisionView | undefined;
+
+    // ── Capability Graph gate ────────────────────────────────────────────────
+    const graphDecision = capabilityGraphEngine.evaluatePath({
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel
+    });
+    let graphForcesRotation = false;
+    let capabilityGraphView: CapabilityPathDecisionView =
+      toCapabilityPathDecisionView(graphDecision);
+
+    if (graphDecision.action === 'block') {
+      const recorded = capabilityGraphEngine.recordTransition({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        toTool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel
+      });
+      observeSecurity({
+        type: 'capability_graph_blocked',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability graph blocked the execution path.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: recorded.risk, reason: recorded.reason }
+      });
+      return res.status(200).json({
+        decision: 'denied',
+        reason: recorded.reason,
+        capabilityGraph: toCapabilityPathDecisionView(recorded)
+      } as ExecuteCapabilityHttpResponse);
+    }
+
+    if (graphDecision.action === 'require_approval') {
+      const recorded = capabilityGraphEngine.recordTransition({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        toTool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel
+      });
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        reason: recorded.reason
+      });
+      observeSecurity({
+        type: 'capability_graph_approval_required',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Capability graph requires human approval for the path.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: recorded.risk, reason: recorded.reason }
+      });
+      return res.status(200).json({
+        decision: 'pending',
+        reason: recorded.reason,
+        capabilityGraph: toCapabilityPathDecisionView(recorded),
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      } as ExecuteCapabilityHttpResponse);
+    }
+
+    if (graphDecision.action === 'force_rotation') {
+      graphForcesRotation = true;
+      observeSecurity({
+        type: 'capability_graph_rotation_required',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability graph forced a session rotation for the path.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: graphDecision.risk, reason: graphDecision.reason }
+      });
+    } else {
+      observeSecurity({
+        type: 'capability_graph_allowed',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability graph allowed the execution path.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: graphDecision.risk }
+      });
+    }
+
+    // ── Trust gate ───────────────────────────────────────────────────────────
+    const trustProfile = trustEngine.getOrCreateProfile(request.compartmentId);
+    const trustView: TrustView = toTrustView(trustProfile);
+
+    if (trustProfile.score.level === 'quarantined') {
+      return res.status(200).json({
+        decision: 'denied',
+        reason: 'Compartment quarantined.',
+        capabilityGraph: capabilityGraphView,
+        trust: trustView
+      } as ExecuteCapabilityHttpResponse);
+    }
+
+    if (trustProfile.score.level === 'restricted') {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        reason: 'Compartment restricted; human approval required.'
+      });
+      observeSecurity({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Compartment restricted; human approval required.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, trustLevel: trustProfile.score.level }
+      });
+      return res.status(200).json({
+        decision: 'pending',
+        reason: 'Compartment restricted; human approval required.',
+        capabilityGraph: capabilityGraphView,
+        trust: trustView,
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      } as ExecuteCapabilityHttpResponse);
+    }
+
+    // ── Defense pipeline ─────────────────────────────────────────────────────
+    type DefenseTerminal =
+      | { kind: 'respond'; body: ExecuteCapabilityHttpResponse }
+      | { kind: 'escalate'; escalation: DynamicRiskEscalation; defense: DefenseDecisionView }
+      | { kind: 'continue' };
+
+    const resolveDefenseForExecute = (
+      source: 'rate_limit' | 'adaptive_defense',
+      action: DefenseAction,
+      reason: string,
+      retryAfterMs: number | undefined,
+      escalationTarget: RiskLevel | undefined
+    ): DefenseTerminal => {
+      if (action === 'cooldown' || action === 'temporary_block') {
+        observeSecurity({
+          type: action === 'cooldown' ? 'cooldown_applied' : 'temporary_block_applied',
+          severity: 'warning',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          message: action === 'cooldown' ? 'Cooldown applied by defense.' : 'Temporary block applied by defense.',
+          metadata: { tool: request.tool, source, reason }
+        });
+        const defense: DefenseDecisionView = { action, source, reason };
+        if (retryAfterMs !== undefined) defense.retryAfterMs = retryAfterMs;
+        return { kind: 'respond', body: { decision: 'denied', reason, capabilityGraph: capabilityGraphView, defense } };
+      }
+      if (action === 'require_approval') {
+        const created = approvalQueue.create({
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          tool: request.tool as CapabilityTool,
+          riskLevel: request.riskLevel as RiskLevel,
+          input: request.input,
+          reason
+        });
+        observeSecurity({
+          type: 'approval_pending',
+          severity: 'info',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          approvalRequestId: created.request.id,
+          message: 'Defense requires human approval.',
+          metadata: { tool: request.tool, riskLevel: request.riskLevel, source, reason }
+        });
+        const defense: DefenseDecisionView = { action, source, reason };
+        return {
+          kind: 'respond',
+          body: { decision: 'pending', reason, capabilityGraph: capabilityGraphView, defense, approvalRequestId: created.request.id, approvalToken: created.token.value }
+        };
+      }
+      if (action === 'escalate_risk') {
+        const target = escalationTarget ?? 'high';
+        const escalation = escalateRisk(request.riskLevel as RiskLevel, target, reason);
+        if (!escalation) return { kind: 'continue' };
+        observeSecurity({
+          type: 'risk_escalated',
+          severity: 'warning',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          message: 'Risk escalated by adaptive defense.',
+          metadata: { tool: request.tool, source, originalRisk: escalation.originalRisk, escalatedRisk: escalation.escalatedRisk, reason }
+        });
+        const defense: DefenseDecisionView = {
+          action, source, reason,
+          escalation: { originalRisk: escalation.originalRisk, escalatedRisk: escalation.escalatedRisk, reason: escalation.reason }
+        };
+        return { kind: 'escalate', escalation, defense };
+      }
+      return { kind: 'continue' };
+    };
+
+    // 1. Rate Limiter.
+    const rateDecision: RateLimitDecision = rateLimiter.evaluate({
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      timestamp: Date.now()
+    });
+    if (rateDecision.action !== 'allow') {
+      observeSecurity({
+        type: 'rate_limit_triggered',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Rate limit triggered.',
+        metadata: { tool: request.tool, action: rateDecision.action, reason: rateDecision.reason }
+      });
+      const terminal = resolveDefenseForExecute('rate_limit', rateDecision.action, rateDecision.reason, rateDecision.retryAfterMs, undefined);
+      if (terminal.kind === 'respond') return res.status(200).json(terminal.body);
+      if (terminal.kind === 'escalate') { request.riskLevel = terminal.escalation.escalatedRisk; defenseView = terminal.defense; }
+    }
+
+    // 2. Adaptive Defense Engine.
+    const adaptiveDecisionsExec = adaptiveDefenseEngine.evaluate({
+      anomalies: heuristicsEngine.queryAnomalies(),
+      incidents: incidentDetector.listIncidents('open')
+    });
+    if (adaptiveDecisionsExec.length > 0) {
+      observeSecurity({
+        type: 'adaptive_defense_triggered',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Adaptive defense triggered.',
+        metadata: { tool: request.tool, actions: adaptiveDecisionsExec.map((d) => d.action) }
+      });
+      const precedenceExec: DefenseAction[] = ['temporary_block', 'cooldown', 'require_approval', 'escalate_risk'];
+      const chosenExec = precedenceExec
+        .map((action) => adaptiveDecisionsExec.find((d) => d.action === action))
+        .find((d) => d !== undefined);
+      if (chosenExec) {
+        const terminal = resolveDefenseForExecute('adaptive_defense', chosenExec.action, chosenExec.reason, chosenExec.cooldownMs, chosenExec.escalation?.escalatedRisk);
+        if (terminal.kind === 'respond') return res.status(200).json(terminal.body);
+        if (terminal.kind === 'escalate') { request.riskLevel = terminal.escalation.escalatedRisk; defenseView = terminal.defense; }
+      }
+    }
+
+    // ── Capability Firewall ──────────────────────────────────────────────────
+    const capabilityRequestExec: CapabilityRequest = {
+      agentId: request.agentId,
+      compartment: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel,
+      input: request.input
+    };
+
+    const decisionExec = firewall.evaluate(capabilityRequestExec);
+
+    if (!decisionExec.allowed) {
+      observeSecurity({
+        type: 'capability_denied',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability denied by firewall.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
+      });
+      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: decisionExec.reason, capabilityGraph: capabilityGraphView };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
+
+    if (decisionExec.requiresConfirmation) {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        sanitizedInput: decisionExec.sanitizedInput,
+        reason: decisionExec.reason
+      });
+      observeSecurity({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Capability requires human approval.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
+      });
+      const response: ExecuteCapabilityHttpResponse = { decision: 'pending', reason: decisionExec.reason, capabilityGraph: capabilityGraphView, approvalRequestId: created.request.id, approvalToken: created.token.value };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
+
+    observeSecurity({
+      type: 'capability_allowed',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      message: 'Capability allowed by firewall.',
+      metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
+    });
+
+    // ── Routing ──────────────────────────────────────────────────────────────
+    let routingExec: RoutingDecision;
+    try {
+      routingExec = transportPolicyEngine.resolve({
+        id: randomUUID(),
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        sanitizedInput: decisionExec.sanitizedInput,
+        session: { sessionId: '', compartmentId: request.compartmentId, transportKind: 'mock', createdAt: 0 }
+      });
+    } catch (err) {
+      if (err instanceof TransportPolicyError) {
+        const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: `No transport routing rule available: ${err.message}`, capabilityGraph: capabilityGraphView };
+        if (defenseView !== undefined) response.defense = defenseView;
+        return res.status(200).json(response);
+      }
+      throw err;
+    }
+
+    // Sprint 17 — determine the effective transport.
+    //
+    // The routing decision resolves the preferred transport from the policy
+    // engine. For the real execute endpoint:
+    //   - 'mock'    → execute with mock transport (always available)
+    //   - 'searxng' → check runtime config; denied if disabled or absent
+    //   - other     → fail-closed
+    //
+    // This is the ONLY place real network transport is activated. The check is
+    // dual: the transport policy must have routed to searxng AND the runtime
+    // config must explicitly enable it.
+    const resolvedKind = routingExec.transportKind;
+
+    if (resolvedKind === 'searxng') {
+      const searxngCfg = activeSnapshot.config.transports?.searxng;
+      if (!searxngCfg || !searxngCfg.enabled) {
+        const response: ExecuteCapabilityHttpResponse = {
+          decision: 'denied',
+          reason: 'SearXNG transport disabled.',
+          capabilityGraph: capabilityGraphView,
+          routing: toRoutingDecisionView(routingExec)
+        };
+        if (defenseView !== undefined) response.defense = defenseView;
+        return res.status(200).json(response);
+      }
+      // SearXNG is enabled: the realSearXngEngine handles this transport.
+      if (!realSearXngEngine) {
+        // Config may have changed since reload; fail-closed.
+        const response: ExecuteCapabilityHttpResponse = {
+          decision: 'denied',
+          reason: 'SearXNG transport unavailable (engine not initialised).',
+          capabilityGraph: capabilityGraphView,
+          routing: toRoutingDecisionView(routingExec)
+        };
+        if (defenseView !== undefined) response.defense = defenseView;
+        return res.status(200).json(response);
+      }
+    } else if (resolvedKind !== 'mock') {
+      // Unknown transport kind — fail-closed.
+      const response: ExecuteCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.`,
+        capabilityGraph: capabilityGraphView,
+        routing: toRoutingDecisionView(routingExec)
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
+
+    observeSecurity({
+      type: 'routing_resolved',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      message: 'Transport routing resolved.',
+      metadata: { tool: request.tool, riskLevel: request.riskLevel, transportKind: resolvedKind, routingReason: routingExec.reason, isolationLevel: routingExec.isolationLevel }
+    });
+
+    // ── Privacy Boundary ─────────────────────────────────────────────────────
+    const privacyExec: PrivacyBoundaryDecision = privacyBoundaryEngine.evaluate({
+      agentId: request.agentId,
+      sourceCompartmentId: request.compartmentId,
+      targetCompartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel,
+      routingIsolationLevel: routingExec.isolationLevel
+    });
+    const privacyViewExec = toPrivacyBoundaryDecisionView(privacyExec);
+
+    if (privacyExec.action === 'block') {
+      observeSecurity({
+        type: 'privacy_boundary_blocked',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Privacy boundary blocked execution.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
+      });
+      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: 'Privacy boundary blocked execution.', capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
+
+    if (privacyExec.action === 'require_approval') {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        sanitizedInput: decisionExec.sanitizedInput,
+        reason: privacyExec.reason
+      });
+      observeSecurity({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Privacy boundary requires human approval.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
+      });
+      const response: ExecuteCapabilityHttpResponse = { decision: 'pending', reason: privacyExec.reason, capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec, approvalRequestId: created.request.id, approvalToken: created.token.value };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
+
+    if (privacyExec.action === 'rotate_session') {
+      observeSecurity({
+        type: 'privacy_boundary_rotation',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Privacy boundary forced a session rotation.',
+        metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
+      });
+    }
+
+    // ── Session ──────────────────────────────────────────────────────────────
+    const mustRotateExec = routingExec.shouldRotateSession || privacyExec.action === 'rotate_session' || graphForcesRotation;
+    const sessionsBefore2 = sessionManager.size();
+    const sessionExec = mustRotateExec
+      ? sessionManager.rotateSession(request.compartmentId)
+      : sessionManager.getOrCreateSession(request.compartmentId);
+
+    if (mustRotateExec) {
+      observeSecurity({ type: 'session_rotated', severity: 'info', agentId: request.agentId, compartmentId: request.compartmentId, sessionId: sessionExec.sessionId, requestId, message: 'Session rotated.', metadata: { transportKind: sessionExec.transportKind } });
+    } else if (sessionManager.size() > sessionsBefore2) {
+      observeSecurity({ type: 'session_created', severity: 'info', agentId: request.agentId, compartmentId: request.compartmentId, sessionId: sessionExec.sessionId, requestId, message: 'Session created.', metadata: { transportKind: sessionExec.transportKind } });
+    }
+
+    // Build the execution request, injecting the resolved transport kind.
+    const executionRequestExec: ExecutionRequest = {
+      id: randomUUID(),
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel,
+      input: request.input,
+      sanitizedInput: decisionExec.sanitizedInput,
+      session: { ...sessionManager.toSessionContext(sessionExec), transportKind: resolvedKind }
+    };
+
+    observeSecurity({
+      type: 'execution_started',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      sessionId: sessionExec.sessionId,
+      requestId,
+      executionId: executionRequestExec.id,
+      message: 'Execution started.',
+      metadata: { tool: request.tool, riskLevel: request.riskLevel, transportKind: resolvedKind, inputType: inputDescriptor.inputType, inputSizeBytes: inputDescriptor.inputSizeBytes }
+    });
+
+    // Select the appropriate execution engine: real (SearXNG) or mock.
+    const activeEngine: ExecutionEngine =
+      resolvedKind === 'searxng' && realSearXngEngine
+        ? realSearXngEngine
+        : executionEngine;
+
+    const resultExec = await activeEngine.execute(executionRequestExec);
+
+    if (resultExec.status !== 'blocked') {
+      sessionManager.recordUse(sessionExec.sessionId);
+    }
+
+    // Sandbox audit.
+    const sandboxViolationCodesExec = resultExec.sandbox
+      ? resultExec.sandbox.violations.map((v) => v.code)
+      : [];
+    if (resultExec.sandbox !== undefined) {
+      if (resultExec.sandbox.action === 'block') {
+        observeSecurity({
+          type: 'sandbox_blocked',
+          severity: 'warning',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          sessionId: sessionExec.sessionId,
+          requestId,
+          executionId: executionRequestExec.id,
+          message: 'Adapter sandbox blocked execution.',
+          metadata: { tool: request.tool, transportKind: resultExec.transportKind, sandboxViolations: sandboxViolationCodesExec }
+        });
+      } else {
+        observeSecurity({
+          type: 'sandbox_allowed',
+          severity: 'info',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          sessionId: sessionExec.sessionId,
+          requestId,
+          executionId: executionRequestExec.id,
+          message: 'Adapter sandbox allowed execution.',
+          metadata: { tool: request.tool, transportKind: resultExec.transportKind }
+        });
+      }
+    }
+
+    const terminalTypeExec: SecurityEventType =
+      resultExec.status === 'success' ? 'execution_succeeded' : resultExec.status === 'failed' ? 'execution_failed' : 'execution_blocked';
+    const terminalSeverityExec: EventSeverity = resultExec.status === 'success' ? 'info' : 'warning';
+    observeSecurity({
+      type: terminalTypeExec,
+      severity: terminalSeverityExec,
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      sessionId: sessionExec.sessionId,
+      requestId,
+      executionId: executionRequestExec.id,
+      message: `Execution ${resultExec.status}.`,
+      metadata: { tool: request.tool, transportKind: resultExec.transportKind, executionStatus: resultExec.status, ...(sandboxViolationCodesExec.length > 0 ? { sandboxViolations: sandboxViolationCodesExec } : {}) }
+    });
+
+    // Graph path recording on success.
+    if (resultExec.status === 'success') {
+      try {
+        const capNodeExec = capabilityGraphEngine.recordCapabilityRequest({
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          tool: request.tool as CapabilityTool,
+          riskLevel: request.riskLevel as RiskLevel
+        });
+        const execNodeExec = capabilityGraphEngine.addNode({
+          id: randomUUID(),
+          kind: 'execution',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          tool: request.tool as CapabilityTool,
+          riskLevel: request.riskLevel as RiskLevel,
+          createdAt: Date.now()
+        });
+        const execEdgeExec = capabilityGraphEngine.addEdge({
+          id: randomUUID(),
+          fromNodeId: capNodeExec.id,
+          toNodeId: execNodeExec.id,
+          relation: 'executed',
+          createdAt: Date.now()
+        });
+        capabilityGraphView = { ...capabilityGraphView, relatedNodeIds: [capNodeExec.id, execNodeExec.id], relatedEdgeIds: [execEdgeExec.id] };
+      } catch { /* fail-safe */ }
+    }
+
+    const executionViewExec: ExecutionResultView = { status: resultExec.status, transportKind: resultExec.transportKind };
+    if (resultExec.output !== undefined) executionViewExec.output = resultExec.output;
+    if (resultExec.error !== undefined) executionViewExec.error = resultExec.error;
+
+    const response: ExecuteCapabilityHttpResponse = {
+      decision: 'allowed',
+      reason: decisionExec.reason,
+      capabilityGraph: capabilityGraphView,
+      routing: toRoutingDecisionView(routingExec),
+      privacyBoundary: privacyViewExec,
+      execution: executionViewExec
+    };
+    if (resultExec.sandbox !== undefined) response.sandbox = toSandboxDecisionView(resultExec.sandbox);
+    if (defenseView !== undefined) response.defense = defenseView;
+    const updatedTrustExec = trustEngine.getProfile(request.compartmentId);
+    response.trust = updatedTrustExec ? toTrustView(updatedTrustExec) : trustView;
+    return res.status(200).json(response);
+  });
+  app.all('/v1/capabilities/execute', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use POST /v1/capabilities/execute.'
     });
   });
 

@@ -21,6 +21,7 @@ import {
   RuntimeConfig,
   RuntimeSandboxPolicy,
   RuntimeTrustPolicy,
+  SearXngTransportConfig,
   TransportPolicyRule
 } from './types.js';
 
@@ -599,6 +600,63 @@ function validateSandboxPolicies(value: unknown): RuntimeSandboxPolicy[] {
 }
 
 /**
+ * Validate the optional `transports.searxng` section of a {@link RuntimeConfig}.
+ *
+ * The field is optional. When absent, the result is `undefined` (disabled,
+ * fail-closed). When present every field is validated strictly; an invalid value
+ * causes an `invalid_schema` error.
+ */
+function validateTransportsConfig(
+  value: unknown
+): RuntimeConfig['transports'] {
+  if (value === undefined || value === null) return undefined;
+  const obj = requireObject(value, 'transports');
+  const result: RuntimeConfig['transports'] = {};
+
+  if ('searxng' in obj && obj.searxng !== undefined && obj.searxng !== null) {
+    const s = requireObject(obj.searxng, 'transports.searxng');
+    const baseUrl = s.baseUrl;
+    if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
+      fail('invalid_schema', 'transports.searxng.baseUrl must be a non-empty string.');
+    }
+    const timeoutMs = s.timeoutMs;
+    if (
+      typeof timeoutMs !== 'number' ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs <= 0
+    ) {
+      fail(
+        'invalid_schema',
+        'transports.searxng.timeoutMs must be a positive finite number.'
+      );
+    }
+    const maxResults = s.maxResults;
+    if (
+      typeof maxResults !== 'number' ||
+      !Number.isInteger(maxResults) ||
+      maxResults < 1
+    ) {
+      fail(
+        'invalid_schema',
+        'transports.searxng.maxResults must be a positive integer.'
+      );
+    }
+    const enabled = s.enabled;
+    if (typeof enabled !== 'boolean') {
+      fail('invalid_schema', 'transports.searxng.enabled must be a boolean.');
+    }
+    result.searxng = {
+      baseUrl: baseUrl as string,
+      timeoutMs: timeoutMs as number,
+      maxResults: maxResults as number,
+      enabled: enabled as boolean
+    } satisfies SearXngTransportConfig;
+  }
+
+  return result;
+}
+
+/**
  * Validate an untrusted value into a typed {@link RuntimeConfig}.
  *
  * Throws {@link RuntimeConfigValidationError} (fail-closed) on the first
@@ -626,7 +684,10 @@ export function validateRuntimeConfig(value: unknown): RuntimeConfig {
     trustPolicies: validateTrustPolicies(obj.trustPolicies),
     graphTransitionRules: validateGraphTransitionRules(obj.graphTransitionRules),
     isolationPolicies: validateIsolationPolicies(obj.isolationPolicies),
-    sandboxPolicies: validateSandboxPolicies(obj.sandboxPolicies)
+    sandboxPolicies: validateSandboxPolicies(obj.sandboxPolicies),
+    ...( obj.transports !== undefined
+      ? { transports: validateTransportsConfig(obj.transports) }
+      : {})
   };
 }
 

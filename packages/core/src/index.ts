@@ -69,6 +69,8 @@ export * from './trust-reputation/index.js';
 
 export * from './runtime-config/index.js';
 
+export * from './transports/searxng/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

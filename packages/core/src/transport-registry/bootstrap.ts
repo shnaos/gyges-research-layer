@@ -1,10 +1,10 @@
 /**
- * Bootstrap transport manifest and sandbox policy for the MVP.
+ * Bootstrap transport manifests and sandbox policies.
  *
  * These are the deterministic defaults the local server starts with. They are
- * pure metadata: no secrets, no real transport configuration. Only the `mock`
- * transport is described — Sprint 10 performs no real network, browser,
- * filesystem, or process work.
+ * pure metadata: no secrets, no real transport configuration. Sprint 10 defined
+ * the `mock` transport; Sprint 17 adds the `searxng` transport manifest and a
+ * dedicated sandbox policy that allows network access ONLY for `searxng`.
  */
 
 import { AdapterSandboxPolicy, TransportManifest } from './types.js';
@@ -59,3 +59,48 @@ export const STRICT_SANDBOX_POLICY: AdapterSandboxPolicy = {
 export const BOOTSTRAP_TRANSPORT_MANIFESTS: readonly TransportManifest[] = [
   BOOTSTRAP_MOCK_MANIFEST
 ];
+
+/**
+ * Sprint 17 — SearXNG transport manifest.
+ *
+ * Declares network access (`networkAccess: true`) and the
+ * `network_explicit_allowed` permission. It supports only the `search` tool.
+ * No browser, filesystem, process-spawn, or env access is declared.
+ */
+export const SEARXNG_TRANSPORT_MANIFEST: TransportManifest = {
+  kind: 'searxng',
+  name: 'SearXNG Transport Adapter',
+  version: '0.1.0',
+  supportedTools: ['search'],
+  declaredPermissions: [
+    'network_explicit_allowed',
+    'no_filesystem',
+    'no_process_spawn',
+    'no_env_access'
+  ],
+  networkAccess: true,
+  browserAccess: false,
+  filesystemAccess: false,
+  processSpawnAccess: false,
+  envAccess: false
+};
+
+/**
+ * Sandbox policy for the SearXNG transport.
+ *
+ * Permits network access and the `network_explicit_allowed` permission while
+ * forbidding browser, filesystem, process-spawn, and env access.
+ */
+export const SEARXNG_SANDBOX_POLICY: AdapterSandboxPolicy = {
+  allowedPermissions: [
+    'network_explicit_allowed',
+    'no_filesystem',
+    'no_process_spawn',
+    'no_env_access'
+  ],
+  allowNetwork: true,
+  allowBrowser: false,
+  allowFilesystem: false,
+  allowProcessSpawn: false,
+  allowEnvAccess: false
+};

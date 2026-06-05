@@ -21,15 +21,18 @@ import { TransportKind } from '../execution/types.js';
  * In Sprint 10 these are purely declarative labels used to audit and gate an
  * adapter's surface. They never enable any real capability:
  *
- * - `execute_mock`     — the adapter may run the in-process mock transport
- * - `network_disabled` — the adapter asserts it performs no network I/O
- * - `no_filesystem`    — the adapter asserts it touches no filesystem
- * - `no_process_spawn` — the adapter asserts it spawns no child process
- * - `no_env_access`    — the adapter asserts it reads no environment variables
+ * - `execute_mock`             — the adapter may run the in-process mock transport
+ * - `network_disabled`         — the adapter asserts it performs no network I/O
+ * - `network_explicit_allowed` — the adapter is explicitly permitted to access
+ *   the network (requires the sandbox policy's `allowNetwork: true`)
+ * - `no_filesystem`            — the adapter asserts it touches no filesystem
+ * - `no_process_spawn`         — the adapter asserts it spawns no child process
+ * - `no_env_access`            — the adapter asserts it reads no environment variables
  */
 export type AdapterSandboxPermission =
   | 'execute_mock'
   | 'network_disabled'
+  | 'network_explicit_allowed'
   | 'no_filesystem'
   | 'no_process_spawn'
   | 'no_env_access';
