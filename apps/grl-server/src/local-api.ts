@@ -12,18 +12,23 @@ import {
   CapabilityRequest,
   CapabilityTool,
   CapabilityRateLimiter,
+  CompartmentTrustEngine,
   DefenseAction,
   DEFAULT_APPROVAL_TTL_MS,
   DynamicRiskEscalation,
   ExecutionEngine,
   ExecutionRequest,
   IdentityCompartment,
+  INITIAL_TRUST_SCORE,
   MockTransportAdapter,
   PrivacyBoundaryDecision,
   PrivacyBoundaryEngine,
   PrivacyBoundaryRule,
   RateLimitDecision,
   RateLimitPolicy,
+  ReputationEvent,
+  ReputationEventType,
+  ReputationProfile,
   RiskLevel,
   RoutingDecision,
   RuntimeAnomaly,
@@ -81,6 +86,11 @@ import {
   PrivacyBoundaryRuleView,
   RateLimitPoliciesHttpResponse,
   RateLimitPolicyView,
+  ReputationEventsHttpResponse,
+  ReputationEventView,
+  ReputationProfileHttpResponse,
+  ReputationProfilesHttpResponse,
+  ReputationProfileView,
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
   RuntimeAnomaliesHttpResponse,
@@ -98,6 +108,7 @@ import {
   TransportManifestView,
   TransportPoliciesHttpResponse,
   TransportPolicyRuleView,
+  TrustView,
   TransportsAuditHttpResponse,
   TransportsHttpResponse
 } from './api-contract.js';
@@ -325,6 +336,19 @@ export function buildAdaptiveDefenseEngine(): AdaptiveDefenseEngine {
   return engine;
 }
 
+/**
+ * Build the Sprint 14 Compartment Trust Engine.
+ *
+ * The engine is deterministic and purely in-memory: it maintains a bounded
+ * trust score (0..100) per identity compartment, scored from static reputation
+ * events, and progressively restores degraded compartments toward neutral. It
+ * performs NO network, persistence, AI/ML, or semantic classification work and
+ * never stores tokens, secrets, or raw request input.
+ */
+export function buildCompartmentTrustEngine(): CompartmentTrustEngine {
+  return new CompartmentTrustEngine();
+}
+
 /** Every valid {@link SecurityEventType}, used to validate audit query params. */
 export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'capability_allowed',
@@ -348,7 +372,11 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'cooldown_applied',
   'temporary_block_applied',
   'risk_escalated',
-  'adaptive_defense_triggered'
+  'adaptive_defense_triggered',
+  'trust_score_changed',
+  'compartment_restricted',
+  'compartment_quarantined',
+  'trust_recovered'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -636,6 +664,48 @@ function toAdaptiveDefensePolicyView(
   return view;
 }
 
+/** Project a {@link ReputationProfile}'s score into the compact trust view. */
+function toTrustView(profile: ReputationProfile): TrustView {
+  return {
+    compartmentId: profile.compartmentId,
+    score: profile.score.value,
+    level: profile.score.level
+  };
+}
+
+/** Project a single {@link ReputationEvent} into its public, secret-free view. */
+function toReputationEventView(event: ReputationEvent): ReputationEventView {
+  const view: ReputationEventView = {
+    id: event.id,
+    createdAt: event.createdAt,
+    compartmentId: event.compartmentId,
+    type: event.type,
+    delta: event.delta,
+    reason: event.reason
+  };
+  if (event.relatedEventId !== undefined) {
+    view.relatedEventId = event.relatedEventId;
+  }
+  if (event.relatedIncidentId !== undefined) {
+    view.relatedIncidentId = event.relatedIncidentId;
+  }
+  return view;
+}
+
+/** Project a {@link ReputationProfile} into its public, secret-free HTTP view. */
+function toReputationProfileView(
+  profile: ReputationProfile
+): ReputationProfileView {
+  return {
+    compartmentId: profile.compartmentId,
+    score: profile.score.value,
+    level: profile.score.level,
+    events: profile.events.map(toReputationEventView),
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt
+  };
+}
+
 /**
  * Parse and validate the `GET /v1/audit/events` query string into an
  * {@link AuditQuery}. Returns `{ error }` on the first invalid parameter so the
@@ -795,6 +865,16 @@ export interface LocalApiOptions {
    * semantic classification work.
    */
   adaptiveDefenseEngine?: AdaptiveDefenseEngine;
+  /**
+   * Compartment Trust Engine (Sprint 14). It maintains a bounded trust score
+   * (0..100) per identity compartment, gates execute-mock based on the
+   * compartment's trust level (quarantined → denied, restricted → human
+   * approval), and records reputation events from the security-event stream.
+   * When omitted, a fresh in-memory engine is created. It performs no network,
+   * persistence, AI/ML, or semantic classification work and never stores
+   * tokens, secrets, or raw request input.
+   */
+  trustEngine?: CompartmentTrustEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1015,29 +1095,190 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const rateLimiter = options.rateLimiter ?? buildCapabilityRateLimiter();
   const adaptiveDefenseEngine =
     options.adaptiveDefenseEngine ?? buildAdaptiveDefenseEngine();
+  const trustEngine = options.trustEngine ?? buildCompartmentTrustEngine();
 
   /**
-   * Emit a security event AND feed it to the runtime heuristics engine.
+   * Map a recorded {@link SecurityEventType} onto the reputation event it feeds
+   * the {@link CompartmentTrustEngine}. Only lifecycle outcomes that carry a
+   * trust signal are mapped; everything else (including the trust audit events
+   * below) is intentionally absent so trust never re-adjusts itself.
+   */
+  const REPUTATION_EVENT_BY_SECURITY_TYPE: Partial<
+    Record<SecurityEventType, ReputationEventType>
+  > = {
+    capability_allowed: 'capability_allowed',
+    capability_denied: 'capability_denied',
+    approval_rejected: 'approval_rejected',
+    privacy_boundary_blocked: 'privacy_boundary_blocked',
+    sandbox_blocked: 'sandbox_blocked',
+    execution_failed: 'execution_failed',
+    execution_succeeded: 'clean_execution'
+  };
+
+  /**
+   * Severity of each trust audit event. A degradation into a restricted /
+   * quarantined band is more urgent than an ordinary score change or recovery.
+   */
+  const TRUST_AUDIT_SEVERITY: Record<
+    'trust_score_changed' | 'compartment_restricted' | 'compartment_quarantined' | 'trust_recovered',
+    EventSeverity
+  > = {
+    trust_score_changed: 'info',
+    compartment_restricted: 'warning',
+    compartment_quarantined: 'critical',
+    trust_recovered: 'info'
+  };
+
+  // Remembers which compartment an open incident belongs to, so a later close
+  // can credit the right compartment's reputation. Incidents themselves carry
+  // no compartment id; the attribution is the compartment of the event that
+  // opened the incident.
+  const incidentCompartments = new Map<string, string>();
+
+  /**
+   * Emit a trust audit event straight to the audit store (NOT through
+   * {@link observeSecurity}). Trust audit events must never be fed back into the
+   * heuristics engine or the trust mapping, which would risk an audit → trust →
+   * audit loop. Metadata is minimal and secret-free.
+   */
+  const emitTrustAudit = (
+    type:
+      | 'trust_score_changed'
+      | 'compartment_restricted'
+      | 'compartment_quarantined'
+      | 'trust_recovered',
+    compartmentId: string,
+    score: number,
+    level: string,
+    message: string
+  ): void => {
+    securityEventEngine.emit({
+      type,
+      severity: TRUST_AUDIT_SEVERITY[type],
+      compartmentId,
+      message,
+      metadata: { score, level }
+    });
+  };
+
+  /**
+   * Record one reputation event and emit the matching trust audit events when
+   * the score (or band) changes. Fail-safe: any error is swallowed so trust
+   * scoring can never break the primary flow.
+   */
+  const applyTrustEvent = (input: {
+    compartmentId: string;
+    type: ReputationEventType;
+    reason: string;
+    relatedEventId?: string;
+    relatedIncidentId?: string;
+    incidentSeverity?: 'info' | 'warning' | 'critical';
+  }): void => {
+    try {
+      const before = trustEngine.getProfile(input.compartmentId);
+      const oldValue = before?.score.value ?? INITIAL_TRUST_SCORE;
+      const oldLevel = before?.score.level ?? 'neutral';
+      const profile = trustEngine.recordEvent(input);
+      const { value, level } = profile.score;
+      if (value === oldValue && level === oldLevel) return;
+
+      if (value !== oldValue) {
+        emitTrustAudit(
+          'trust_score_changed',
+          input.compartmentId,
+          value,
+          level,
+          'Compartment trust score changed.'
+        );
+      }
+      if (value > oldValue) {
+        emitTrustAudit(
+          'trust_recovered',
+          input.compartmentId,
+          value,
+          level,
+          'Compartment trust recovered.'
+        );
+      }
+      if (level === 'restricted' && oldLevel !== 'restricted') {
+        emitTrustAudit(
+          'compartment_restricted',
+          input.compartmentId,
+          value,
+          level,
+          'Compartment degraded to restricted.'
+        );
+      }
+      if (level === 'quarantined' && oldLevel !== 'quarantined') {
+        emitTrustAudit(
+          'compartment_quarantined',
+          input.compartmentId,
+          value,
+          level,
+          'Compartment degraded to quarantined.'
+        );
+      }
+    } catch {
+      // Fail-safe: trust scoring is observational and must never break the flow.
+    }
+  };
+
+  /**
+   * Emit a security event AND feed it to the runtime heuristics engine and the
+   * compartment trust engine.
    *
-   * This is the single integration point for Sprint 12: every audited event is
-   * also observed by the heuristics engine, and any resulting anomalies are
-   * processed into incidents. The observer is strictly fail-safe — a heuristic
-   * error is swallowed so it can NEVER break the main `execute-mock` flow or any
-   * approval decision. The engine is a passive observer: it never blocks, never
-   * mutates the request, and never performs network work.
+   * This is the single integration point for Sprints 12–14: every audited event
+   * is observed by the heuristics engine (anomalies → incidents) and, when it
+   * carries a compartment and a trust signal, mapped into a reputation event.
+   * Newly opened incidents are also scored against the compartment of the
+   * triggering event. The observer is strictly fail-safe — any heuristic or
+   * trust error is swallowed so it can NEVER break the main `execute-mock` flow
+   * or any approval decision. It never blocks, never mutates the request, and
+   * never performs network work.
    */
   const observeSecurity = (
     input: Parameters<SecurityEventEngine['emit']>[0]
   ): SecurityEvent => {
     const event = securityEventEngine.emit(input);
+    let openedIncidents: RuntimeIncident[] = [];
     try {
       const anomalies = heuristicsEngine.ingest(event);
       if (anomalies.length > 0) {
+        const before = new Set(
+          incidentDetector.listIncidents('open').map((incident) => incident.id)
+        );
         incidentDetector.process(anomalies);
+        openedIncidents = incidentDetector
+          .listIncidents('open')
+          .filter((incident) => !before.has(incident.id));
       }
     } catch {
       // Fail-safe: runtime heuristics are observational only and must never
       // interfere with the primary request flow.
+    }
+
+    // Map the event onto a reputation event for its compartment, then score any
+    // freshly-opened incidents against the same compartment.
+    if (event.compartmentId !== undefined) {
+      const reputationType = REPUTATION_EVENT_BY_SECURITY_TYPE[event.type];
+      if (reputationType !== undefined) {
+        applyTrustEvent({
+          compartmentId: event.compartmentId,
+          type: reputationType,
+          reason: `Security event ${event.type}.`,
+          relatedEventId: event.id
+        });
+      }
+      for (const incident of openedIncidents) {
+        incidentCompartments.set(incident.id, event.compartmentId);
+        applyTrustEvent({
+          compartmentId: event.compartmentId,
+          type: 'incident_opened',
+          reason: `Runtime incident opened (${incident.severity}).`,
+          relatedIncidentId: incident.id,
+          incidentSeverity: incident.severity
+        });
+      }
     }
     return event;
   };
@@ -1196,6 +1437,62 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // lets the request continue. Terminal defense actions build and return their
     // own response below.
     let defenseView: DefenseDecisionView | undefined;
+
+    // ── Compartment Trust gate (Sprint 14) — runs BEFORE the defense pipeline ──
+    // The compartment's current trust standing decides whether the request may
+    // proceed at all. This snapshot reflects trust as it was when the request
+    // arrived; the events of this request are scored afterwards as the pipeline
+    // emits security events.
+    //   - quarantined → denied outright (no defense, firewall, or execution)
+    //   - restricted  → diverted to the human-in-the-loop approval queue
+    //   - neutral / trusted → continue normally
+    const trustProfile = trustEngine.getOrCreateProfile(request.compartmentId);
+    const trustView: TrustView = toTrustView(trustProfile);
+
+    if (trustProfile.score.level === 'quarantined') {
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: 'Compartment quarantined.',
+        trust: trustView
+      };
+      return res.status(200).json(response);
+    }
+
+    if (trustProfile.score.level === 'restricted') {
+      // Documented decision: a restricted compartment is forced through human
+      // approval (require_approval) rather than a silent risk escalation, so a
+      // degraded compartment can never auto-execute.
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        reason: 'Compartment restricted; human approval required.'
+      });
+      observeSecurity({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Compartment restricted; human approval required.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          trustLevel: trustProfile.score.level
+        }
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'pending',
+        reason: 'Compartment restricted; human approval required.',
+        trust: trustView,
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      };
+      return res.status(200).json(response);
+    }
 
     // Discriminated outcome of applying one non-`allow` defense action.
     type DefenseTerminal =
@@ -1819,6 +2116,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       response.sandbox = toSandboxDecisionView(result.sandbox);
     }
     if (defenseView !== undefined) response.defense = defenseView;
+    // Surface the compartment's trust standing AFTER this request's outcome was
+    // scored (e.g. a clean execution nudges the score up).
+    const updatedTrust = trustEngine.getProfile(request.compartmentId);
+    response.trust = updatedTrust ? toTrustView(updatedTrust) : trustView;
     return res.status(200).json(response);
   });
   app.all('/v1/capabilities/execute-mock', (_req, res) => {
@@ -2012,6 +2313,18 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       return res.status(404).json({ error: 'Runtime incident not found.' });
     }
     const incident = incidentDetector.closeIncident(req.params.id);
+    // Sprint 14: credit the compartment that owned this incident with a trust
+    // recovery, if the incident was attributed when it opened.
+    const owningCompartment = incidentCompartments.get(req.params.id);
+    if (owningCompartment !== undefined) {
+      applyTrustEvent({
+        compartmentId: owningCompartment,
+        type: 'incident_closed',
+        reason: `Runtime incident ${req.params.id} closed.`,
+        relatedIncidentId: req.params.id
+      });
+      incidentCompartments.delete(req.params.id);
+    }
     const body: RuntimeIncidentHttpResponse = {
       incident: toRuntimeIncidentView(incident)
     };
@@ -2067,6 +2380,65 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   app.all('/v1/defense/adaptive-policies', (_req, res) => {
     res.status(405).json({
       error: 'Method not allowed. Use GET /v1/defense/adaptive-policies.'
+    });
+  });
+
+  // ── Compartment Trust & Reputation read endpoints (Sprint 14) ──
+  // Metadata only: bounded trust scores, levels, and the reputation event
+  // history. Never any token, secret, or raw caller input.
+  app.get('/v1/trust/profiles', (_req, res) => {
+    const profiles: ReputationProfileView[] = trustEngine
+      .listProfiles()
+      .map(toReputationProfileView);
+    const body: ReputationProfilesHttpResponse = { profiles };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/trust/profiles', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/trust/profiles.' });
+  });
+
+  app.get('/v1/trust/events', (req, res) => {
+    const rawCompartmentId = req.query.compartmentId;
+    let compartmentId: string | undefined;
+    if (typeof rawCompartmentId === 'string' && rawCompartmentId.length > 0) {
+      compartmentId = rawCompartmentId;
+    } else if (Array.isArray(rawCompartmentId)) {
+      return res
+        .status(400)
+        .json({ error: 'Query "compartmentId" must be a single value.' });
+    }
+    const profiles = trustEngine.listProfiles();
+    const events: ReputationEventView[] = profiles
+      .filter(
+        (profile) =>
+          compartmentId === undefined || profile.compartmentId === compartmentId
+      )
+      .flatMap((profile) => profile.events)
+      .map(toReputationEventView);
+    const body: ReputationEventsHttpResponse = { events };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/trust/events', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/trust/events.' });
+  });
+
+  app.get('/v1/trust/profiles/:compartmentId', (req, res) => {
+    const profile = trustEngine.getProfile(req.params.compartmentId);
+    if (!profile) {
+      return res.status(404).json({ error: 'Reputation profile not found.' });
+    }
+    const body: ReputationProfileHttpResponse = {
+      profile: toReputationProfileView(profile)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/trust/profiles/:compartmentId', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/trust/profiles/:compartmentId.'
     });
   });
 

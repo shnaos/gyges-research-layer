@@ -163,12 +163,31 @@ export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
   defense?: DefenseDecisionView;
+  trust?: TrustView;
   routing?: RoutingDecisionView;
   privacyBoundary?: PrivacyBoundaryDecisionView;
   sandbox?: SandboxDecisionView;
   execution?: ExecutionResultView;
   approvalRequestId?: string;
   approvalToken?: string;
+}
+
+/** Trust level band a compartment falls into (Sprint 14). */
+export type TrustLevelView =
+  | 'trusted'
+  | 'neutral'
+  | 'restricted'
+  | 'quarantined';
+
+/**
+ * Public, secret-free view of a compartment's current trust standing attached to
+ * an execute-mock response and returned by the `/v1/trust` read endpoints. Pure
+ * metadata — never a token, secret, or raw request input.
+ */
+export interface TrustView {
+  compartmentId: string;
+  score: number;
+  level: TrustLevelView;
 }
 
 /** Active defensive action surfaced on an execute-mock response. */
@@ -483,7 +502,11 @@ export type SecurityEventTypeView =
   | 'cooldown_applied'
   | 'temporary_block_applied'
   | 'risk_escalated'
-  | 'adaptive_defense_triggered';
+  | 'adaptive_defense_triggered'
+  | 'trust_score_changed'
+  | 'compartment_restricted'
+  | 'compartment_quarantined'
+  | 'trust_recovered';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -587,4 +610,52 @@ export interface RuntimeIncidentsHttpResponse {
  */
 export interface RuntimeIncidentHttpResponse {
   incident: RuntimeIncidentView;
+}
+
+/**
+ * Public, secret-free view of a single scored reputation event (Sprint 14).
+ *
+ * Returned by `GET /v1/trust/events`. Pure correlation metadata — never a token,
+ * secret, raw header, raw environment, raw stack trace, or raw request input.
+ */
+export interface ReputationEventView {
+  id: string;
+  createdAt: number;
+  compartmentId: string;
+  type: string;
+  delta: number;
+  reason: string;
+  relatedEventId?: string;
+  relatedIncidentId?: string;
+}
+
+/**
+ * Public, secret-free view of a compartment reputation profile (Sprint 14).
+ *
+ * Returned by `GET /v1/trust/profiles` and `GET /v1/trust/profiles/:id`. Pure
+ * metadata: the bounded trust score, its level band, and the ordered event
+ * history that shaped it. Never a token, secret, or raw request input.
+ */
+export interface ReputationProfileView {
+  compartmentId: string;
+  score: number;
+  level: TrustLevelView;
+  events: ReputationEventView[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Response body for `GET /v1/trust/profiles`. */
+export interface ReputationProfilesHttpResponse {
+  profiles: ReputationProfileView[];
+}
+
+/** Response body for `GET /v1/trust/profiles/:compartmentId`. */
+export interface ReputationProfileHttpResponse {
+  profile: ReputationProfileView;
+}
+
+/** Response body for `GET /v1/trust/events`. */
+export interface ReputationEventsHttpResponse {
+  events: ReputationEventView[];
 }
