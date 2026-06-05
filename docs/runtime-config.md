@@ -230,3 +230,13 @@ config → audit → config loop.
 - **JSON only**, **filesystem only** — never a URL or remote YAML.
 - **Never** stores tokens, secrets, or raw caller input — only deterministic
   policy metadata.
+
+## Relationship to Runtime Profiles (Sprint 20)
+
+Sprint 20 introduces a **profile layer** on top of the `RuntimeConfig` system.
+`RuntimeProfileResolver` takes the active `RuntimeConfig` snapshot as its
+starting point, applies policy packs in order, applies profile overrides, and
+produces a frozen `ResolvedRuntimeProfile`. The profile layer never bypasses
+the config validation performed by `RuntimeConfigLoader`.
+
+See [`docs/runtime-profiles.md`](runtime-profiles.md) for details.

@@ -81,7 +81,17 @@ import {
   SEARXNG_TRANSPORT_MANIFEST,
   SEARXNG_SANDBOX_POLICY,
   buildSearXngAdapter,
-  SearXngConfigError
+  SearXngConfigError,
+  RuntimeProfileResolver,
+  RuntimeProfileResolutionError,
+  RUNTIME_PROFILE_NAMES,
+  BUILT_IN_PACKS,
+  BUILT_IN_PROFILES,
+  isValidProfileName,
+  type PolicyPack,
+  type RuntimeProfile,
+  type ResolvedRuntimeProfile,
+  type RuntimeProfileName
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -147,7 +157,13 @@ import {
   TrustView,
   TransportsAuditHttpResponse,
   TransportsHttpResponse,
-  ExecuteCapabilityHttpResponse
+  ExecuteCapabilityHttpResponse,
+  RuntimeProfilesHttpResponse,
+  RuntimeProfileHttpResponse,
+  RuntimePacksHttpResponse,
+  RuntimeProfileSwitchHttpResponse,
+  RuntimeProfileView,
+  PolicyPackView
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -588,7 +604,11 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'config_loaded',
   'config_reloaded',
   'config_reload_failed',
-  'config_validation_failed'
+  'config_validation_failed',
+  'runtime_profile_loaded',
+  'runtime_profile_switched',
+  'runtime_profile_switch_failed',
+  'policy_pack_applied'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -1175,6 +1195,21 @@ export interface LocalApiOptions {
    * work beyond reading the user's own local JSON file.
    */
   runtimeConfigLoader?: RuntimeConfigLoader;
+  /**
+   * The active runtime profile name (Sprint 20). Determines which
+   * {@link PolicyPack}s are applied on top of the resolved {@link RuntimeConfig}
+   * at boot and after profile switches. Defaults to `'balanced'` when omitted.
+   * Only local profile switching is supported — no cloud, no remote sync.
+   */
+  activeProfileName?: RuntimeProfileName;
+  /**
+   * The profile resolver (Sprint 20). Resolves profile names into concrete
+   * {@link RuntimeConfig}s by applying the ordered sequence of
+   * {@link PolicyPack}s. When omitted, the default
+   * {@link RuntimeProfileResolver} seeded with the built-in packs and profiles
+   * is created. Injected for testing.
+   */
+  profileResolver?: RuntimeProfileResolver;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1522,6 +1557,110 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     checksum: activeSnapshot.checksum,
     message: 'Runtime config loaded.'
   });
+
+  // ---------------------------------------------------------------------------
+  // Sprint 20 — Policy Packs & Runtime Profiles.
+  //
+  // A RuntimeProfileResolver is built from the built-in packs and profiles (or
+  // injected for testing). The active profile is resolved at boot from
+  // GRL_PROFILE (via options.activeProfileName) and defaults to 'balanced'.
+  // Profile switching is purely local — no cloud, no remote sync.
+  // ---------------------------------------------------------------------------
+  const profileResolver =
+    options.profileResolver ?? new RuntimeProfileResolver();
+
+  let activeProfileName: RuntimeProfileName =
+    options.activeProfileName ?? 'balanced';
+
+  // Boot-time profile resolution. Fail-closed: if the configured profile is
+  // invalid, fall back to 'balanced' and emit a switch_failed audit event.
+  let activeResolvedProfile: ResolvedRuntimeProfile | null = null;
+  try {
+    activeResolvedProfile = profileResolver.resolveProfile(
+      activeProfileName,
+      activeSnapshot.config
+    );
+    // Emit profile-loaded audit event (metadata only, no raw values).
+    securityEventEngine.emit({
+      type: 'runtime_profile_loaded',
+      severity: 'info',
+      message: `Runtime profile loaded: "${activeProfileName}".`,
+      metadata: {
+        profileName: activeProfileName,
+        packIds: activeResolvedProfile.packs.map((p) => p.id)
+      }
+    });
+    // Emit a pack-applied event for each pack.
+    for (const pack of activeResolvedProfile.packs) {
+      securityEventEngine.emit({
+        type: 'policy_pack_applied',
+        severity: 'debug',
+        message: `Policy pack applied: "${pack.id}".`,
+        metadata: { packId: pack.id, profileName: activeProfileName }
+      });
+    }
+  } catch (err) {
+    // Fail-closed: fall back to 'balanced' rather than crashing.
+    const reason =
+      err instanceof RuntimeProfileResolutionError ? err.reason : 'unknown';
+    securityEventEngine.emit({
+      type: 'runtime_profile_switch_failed',
+      severity: 'warning',
+      message: `Failed to load profile "${activeProfileName}", falling back to "balanced".`,
+      metadata: { attempted: activeProfileName, reason }
+    });
+    activeProfileName = 'balanced';
+    try {
+      activeResolvedProfile = profileResolver.resolveProfile(
+        'balanced',
+        activeSnapshot.config
+      );
+    } catch {
+      activeResolvedProfile = null;
+    }
+  }
+
+  /**
+   * Build an HTTP-safe view of a {@link RuntimeProfile}.
+   *
+   * Only metadata is returned — no raw overrides or resolved config values.
+   */
+  const toProfileView = (profile: RuntimeProfile): RuntimeProfileView => {
+    const view: RuntimeProfileView = {
+      name: profile.name,
+      packIds: [...profile.packs],
+      enabled: profile.enabled
+    };
+    if (profile.description !== undefined) view.description = profile.description;
+    if (profile.extends !== undefined) view.extends = profile.extends;
+    return view;
+  };
+
+  /**
+   * Build an HTTP-safe view of a {@link PolicyPack}.
+   *
+   * Only the pack id, description, and the names of defined fields are returned
+   * (no raw policy values — they are internal, though not secret).
+   */
+  const toPackView = (pack: PolicyPack): PolicyPackView => {
+    const PACK_POLICY_FIELDS: (keyof PolicyPack)[] = [
+      'firewallPolicies',
+      'transportPolicies',
+      'adaptiveDefensePolicies',
+      'rateLimitPolicies',
+      'privacyBoundaryRules',
+      'graphTransitionRules',
+      'isolationPolicies',
+      'trustPolicies',
+      'sandboxPolicies'
+    ];
+    const definedFields = PACK_POLICY_FIELDS.filter(
+      (f) => pack[f] !== undefined
+    );
+    const view: PolicyPackView = { id: pack.id, definedFields };
+    if (pack.description !== undefined) view.description = pack.description;
+    return view;
+  };
 
   /**
    * Map a recorded {@link SecurityEventType} onto the reputation event it feeds
@@ -3773,6 +3912,169 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   });
 
+  // ── Sprint 20 — Runtime Profiles & Policy Packs endpoints ──────────────────
+  // Metadata only: profile names/descriptions/pack ids, pack ids/descriptions/
+  // defined-field summaries, and the active profile. Never any token, secret,
+  // raw policy values, or raw request input.
+
+  // GET /v1/runtime/profiles — list all registered profiles
+  app.get('/v1/runtime/profiles', (_req, res) => {
+    const profiles = profileResolver.listProfiles().map(toProfileView);
+    const body: RuntimeProfilesHttpResponse = { profiles };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/profiles', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/runtime/profiles.' });
+  });
+
+  // GET /v1/runtime/packs — list all registered packs
+  app.get('/v1/runtime/packs', (_req, res) => {
+    const packs = profileResolver.listPacks().map(toPackView);
+    const body: RuntimePacksHttpResponse = { packs };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/packs', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/runtime/packs.' });
+  });
+
+  // GET /v1/runtime/profile — show the active profile
+  app.get('/v1/runtime/profile', (_req, res) => {
+    const profile = activeResolvedProfile?.profile;
+    if (!profile) {
+      return res.status(200).json({
+        profile: toProfileView({
+          name: activeProfileName,
+          packs: [],
+          enabled: true
+        })
+      });
+    }
+    const body: RuntimeProfileHttpResponse = {
+      profile: toProfileView(profile)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/profile', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/runtime/profile.' });
+  });
+
+  // POST /v1/runtime/profile/:name — local profile switch (no cloud, no remote sync).
+  //   200 — switched successfully, returns new profile view + timestamp
+  //   400 — profile is disabled or resolution failed
+  //   404 — unknown profile name
+  //   405 — wrong method on the parent path (already handled above)
+  app.post('/v1/runtime/profile/:name', (req, res) => {
+    const candidate = req.params.name;
+
+    // Validate profile name.
+    if (!isValidProfileName(candidate)) {
+      securityEventEngine.emit({
+        type: 'runtime_profile_switch_failed',
+        severity: 'warning',
+        message: `Profile switch to unknown profile "${candidate}" rejected. Current profile "${activeProfileName}" preserved.`,
+        metadata: { attempted: candidate, current: activeProfileName, reason: 'unknown_profile' }
+      });
+      return res.status(404).json({
+        error: `Unknown runtime profile: "${candidate}". Valid profiles: ${RUNTIME_PROFILE_NAMES.join(', ')}.`
+      });
+    }
+    const candidateName = candidate as RuntimeProfileName;
+
+    // Check the profile is enabled.
+    const allProfiles = profileResolver.listProfiles();
+    const targetProfile = allProfiles.find((p) => p.name === candidateName);
+    if (!targetProfile || !targetProfile.enabled) {
+      return res.status(400).json({
+        error: `Runtime profile "${candidateName}" is not enabled.`
+      });
+    }
+
+    // Attempt resolution — fail-safe: preserve existing profile on failure.
+    let resolved: ResolvedRuntimeProfile;
+    try {
+      resolved = profileResolver.resolveProfile(
+        candidateName,
+        activeSnapshot.config
+      );
+    } catch (err) {
+      const reason =
+        err instanceof RuntimeProfileResolutionError ? err.reason : 'unknown';
+      securityEventEngine.emit({
+        type: 'runtime_profile_switch_failed',
+        severity: 'warning',
+        message: `Profile switch to "${candidateName}" failed. Previous profile "${activeProfileName}" preserved.`,
+        metadata: { attempted: candidateName, current: activeProfileName, reason }
+      });
+      return res.status(400).json({
+        error: `Failed to switch to profile "${candidateName}": ${err instanceof Error ? err.message : 'resolution error'}.`
+      });
+    }
+
+    // Apply the resolved config to the policy engines (mirrors applyReloadedSnapshot
+    // but without touching the snapshot — profiles layer on top of config).
+    const previousProfile = activeProfileName;
+    activeProfileName = candidateName;
+    activeResolvedProfile = resolved;
+
+    // Rebuild policy engines from the profile's resolved config. Stateful
+    // components (sessions, approvals, audit, trust) are preserved.
+    firewall = buildFirewallFromConfig(resolved.resolvedConfig.firewallPolicies);
+    transportPolicyEngine = buildTransportPolicyEngineFromConfig(
+      resolved.resolvedConfig.transportPolicies
+    );
+    privacyBoundaryEngine = buildPrivacyBoundaryEngineFromConfig(
+      resolved.resolvedConfig.privacyBoundaryRules
+    );
+    rateLimiter = buildRateLimiterFromConfig(
+      resolved.resolvedConfig.rateLimitPolicies
+    );
+    adaptiveDefenseEngine = buildAdaptiveDefenseEngineFromConfig(
+      resolved.resolvedConfig.adaptiveDefensePolicies
+    );
+    capabilityGraphEngine = buildCapabilityGraphEngineFromConfig(
+      resolved.resolvedConfig
+    );
+
+    // Emit profile-switched audit event.
+    securityEventEngine.emit({
+      type: 'runtime_profile_switched',
+      severity: 'info',
+      message: `Runtime profile switched from "${previousProfile}" to "${candidateName}".`,
+      metadata: {
+        previous: previousProfile,
+        current: candidateName,
+        packIds: resolved.packs.map((p) => p.id)
+      }
+    });
+    // Emit pack-applied event for each pack.
+    for (const pack of resolved.packs) {
+      securityEventEngine.emit({
+        type: 'policy_pack_applied',
+        severity: 'debug',
+        message: `Policy pack applied: "${pack.id}".`,
+        metadata: { packId: pack.id, profileName: candidateName }
+      });
+    }
+
+    const switchedAt = Date.now();
+    const body: RuntimeProfileSwitchHttpResponse = {
+      profile: toProfileView(resolved.profile),
+      switchedAt
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/profile/:name', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use POST /v1/runtime/profile/:name.'
+    });
+  });
+
   // Read-only metadata surface (Sprint 16): expose the active runtime config and
   // its derived metadata. The body carries only deterministic policy data —
   // NEVER a token, secret, credential, or raw request input.
@@ -4002,6 +4304,22 @@ function startLocalApiServer(): void {
     }
   }
 
+  // Sprint 20 — resolve the active runtime profile from GRL_PROFILE.
+  // Defaults to 'balanced'. An invalid profile name falls back to 'balanced'
+  // at the app level (fail-closed, logged at startup).
+  const rawProfile = process.env.GRL_PROFILE;
+  const activeProfileName: RuntimeProfileName = isValidProfileName(rawProfile)
+    ? rawProfile
+    : 'balanced';
+
+  if (rawProfile && !isValidProfileName(rawProfile)) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `GRL_PROFILE="${rawProfile}" is not a valid profile name. ` +
+        `Valid profiles: ${RUNTIME_PROFILE_NAMES.join(', ')}. Falling back to "balanced".`
+    );
+  }
+
   const app = createLocalApiApp({
     firewall: buildFirewallFromConfig(activeConfig.firewallPolicies),
     maxBodyBytes: config.maxBodyBytes,
@@ -4013,11 +4331,14 @@ function startLocalApiServer(): void {
       reusePolicy: config.sessionReusePolicy
     }),
     transportRegistry,
-    runtimeConfigLoader
+    runtimeConfigLoader,
+    activeProfileName
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console
-    console.log(`GRL Local API listening on http://${config.host}:${config.port}`);
+    console.log(
+      `GRL Local API listening on http://${config.host}:${config.port} [profile: ${activeProfileName}]`
+    );
   });
 }
 

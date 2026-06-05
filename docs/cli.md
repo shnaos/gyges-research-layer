@@ -184,6 +184,85 @@ loaded_at   2024-01-01T00:00:00.000Z
 
 ---
 
+### `grl runtime profiles`
+
+List all available runtime profiles.
+
+```bash
+grl runtime profiles
+```
+
+Output:
+```
+name        strict
+enabled     true
+packs       strict-defense-pack, strict-sandbox-pack, privacy-hardening-pack, trust-hardening-pack
+description Aggressive deny-by-default. ...
+
+name        balanced
+enabled     true
+packs       balanced-default-pack
+description Default recommended profile. ...
+```
+
+---
+
+### `grl runtime profile`
+
+Show the currently active runtime profile.
+
+```bash
+grl runtime profile
+```
+
+Output:
+```
+name     balanced
+enabled  true
+packs    balanced-default-pack
+```
+
+---
+
+### `grl runtime profile <name>`
+
+Switch the runtime to a named profile (local only, no cloud, no restart required).
+
+```bash
+grl runtime profile strict
+grl runtime profile balanced
+grl runtime profile research
+grl runtime profile development
+```
+
+Output on success:
+```
+switched_to  strict
+packs        strict-defense-pack, strict-sandbox-pack, privacy-hardening-pack, trust-hardening-pack
+switched_at  2024-01-01T00:00:00.000Z
+```
+
+---
+
+### `grl runtime packs`
+
+List all registered policy packs.
+
+```bash
+grl runtime packs
+```
+
+Output:
+```
+id      balanced-default-pack
+fields  firewallPolicies, transportPolicies, rateLimitPolicies, ...
+
+id      strict-defense-pack
+fields  firewallPolicies, rateLimitPolicies, adaptiveDefensePolicies
+```
+
+---
+
 ### `grl transports`
 
 List registered transport manifests.

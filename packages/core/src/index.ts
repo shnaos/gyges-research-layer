@@ -71,6 +71,8 @@ export * from './runtime-config/index.js';
 
 export * from './transports/searxng/index.js';
 
+export * from './runtime-profiles/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

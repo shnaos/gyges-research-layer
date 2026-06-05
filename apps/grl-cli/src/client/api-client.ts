@@ -80,6 +80,37 @@ export interface RuntimeConfigResponse {
   checksum: string;
 }
 
+export interface RuntimeProfileView {
+  name: string;
+  description?: string;
+  extends?: string;
+  packIds: string[];
+  enabled: boolean;
+}
+
+export interface PolicyPackView {
+  id: string;
+  description?: string;
+  definedFields: string[];
+}
+
+export interface RuntimeProfilesResponse {
+  profiles: RuntimeProfileView[];
+}
+
+export interface RuntimeProfileResponse {
+  profile: RuntimeProfileView;
+}
+
+export interface RuntimePacksResponse {
+  packs: PolicyPackView[];
+}
+
+export interface RuntimeProfileSwitchResponse {
+  profile: RuntimeProfileView;
+  switchedAt: number;
+}
+
 export interface TransportManifest {
   kind: string;
   name: string;
@@ -234,5 +265,22 @@ export class GrlApiClient {
 
   async listTransports(): Promise<TransportsResponse> {
     return this.request<TransportsResponse>('GET', '/v1/transports');
+  }
+
+  async listRuntimeProfiles(): Promise<RuntimeProfilesResponse> {
+    return this.request<RuntimeProfilesResponse>('GET', '/v1/runtime/profiles');
+  }
+
+  async getActiveProfile(): Promise<RuntimeProfileResponse> {
+    return this.request<RuntimeProfileResponse>('GET', '/v1/runtime/profile');
+  }
+
+  async listRuntimePacks(): Promise<RuntimePacksResponse> {
+    return this.request<RuntimePacksResponse>('GET', '/v1/runtime/packs');
+  }
+
+  async switchProfile(name: string): Promise<RuntimeProfileSwitchResponse> {
+    const encoded = encodeURIComponent(name);
+    return this.request<RuntimeProfileSwitchResponse>('POST', `/v1/runtime/profile/${encoded}`);
   }
 }

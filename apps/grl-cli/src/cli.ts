@@ -16,7 +16,7 @@ import { runSearch } from './commands/search.js';
 import { runAudit } from './commands/audit.js';
 import { runTrust } from './commands/trust.js';
 import { runIncidents } from './commands/incidents.js';
-import { runRuntimeVersion, runRuntimeReload } from './commands/runtime.js';
+import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks } from './commands/runtime.js';
 import { runTransports } from './commands/transports.js';
 
 const program = new Command();
@@ -115,6 +115,37 @@ runtimeCmd
   .action(async () => {
     await runCommand(async (client, cfg) => {
       await runRuntimeReload(client, cfg);
+    });
+  });
+
+runtimeCmd
+  .command('profiles')
+  .description('List all available runtime profiles')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runRuntimeProfiles(client, cfg);
+    });
+  });
+
+runtimeCmd
+  .command('packs')
+  .description('List all available policy packs')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runRuntimePacks(client, cfg);
+    });
+  });
+
+runtimeCmd
+  .command('profile [name]')
+  .description('Show active profile, or switch to a named profile')
+  .action(async (name?: string) => {
+    await runCommand(async (client, cfg) => {
+      if (name) {
+        await runRuntimeProfileSwitch(name, client, cfg);
+      } else {
+        await runRuntimeProfile(client, cfg);
+      }
     });
   });
 
