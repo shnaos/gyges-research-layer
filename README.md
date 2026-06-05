@@ -222,11 +222,28 @@ npm --prefix examples/local-agent run start
 - [`docs/security/incident-response.md`](docs/security/incident-response.md)
 - [`docs/security/privacy-model.md`](docs/security/privacy-model.md)
 
+### Agent SDK (Sprint 21)
+
+The `@gyges/agent-sdk` package provides a typed, privacy-first client for local AI agents:
+
+```ts
+import { GrlAgentClient, isAllowed, isPending } from '@gyges/agent-sdk';
+
+const client = new GrlAgentClient();
+const result = await client.search('bitcoin privacy');
+
+if (isAllowed(result)) console.log(result.results);
+if (isPending(result)) console.log('Approval required:', result.approvalRequestId);
+```
+
+See [`docs/agent-sdk.md`](docs/agent-sdk.md) for the full reference.
+
 ### Architecture
 
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/runtime-profiles.md`](docs/runtime-profiles.md)
 - [`docs/runtime-config.md`](docs/runtime-config.md)
+- [`docs/agent-sdk.md`](docs/agent-sdk.md)
 - [`docs/cli.md`](docs/cli.md)
 - [`docs/searxng-transport.md`](docs/searxng-transport.md)
 - [`docs/roadmap.md`](docs/roadmap.md)
