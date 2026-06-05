@@ -61,6 +61,8 @@ export * from './audit/index.js';
 
 export * from './runtime-security/index.js';
 
+export * from './adaptive-defense/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

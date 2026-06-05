@@ -162,12 +162,112 @@ export interface RoutingDecisionView {
 export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
+  defense?: DefenseDecisionView;
   routing?: RoutingDecisionView;
   privacyBoundary?: PrivacyBoundaryDecisionView;
   sandbox?: SandboxDecisionView;
   execution?: ExecutionResultView;
   approvalRequestId?: string;
   approvalToken?: string;
+}
+
+/** Active defensive action surfaced on an execute-mock response. */
+export type DefenseActionView =
+  | 'allow'
+  | 'cooldown'
+  | 'temporary_block'
+  | 'require_approval'
+  | 'escalate_risk';
+
+/** Which engine produced a defense decision. */
+export type DefenseSourceView = 'rate_limit' | 'adaptive_defense';
+
+/** Risk level used in a dynamic risk escalation. */
+export type RiskLevelView = 'low' | 'medium' | 'high';
+
+/**
+ * Public, secret-free view of a dynamic risk escalation applied before the
+ * firewall. Pure metadata — no secrets, no raw input.
+ */
+export interface RiskEscalationView {
+  originalRisk: RiskLevelView;
+  escalatedRisk: RiskLevelView;
+  reason: string;
+}
+
+/**
+ * Public, secret-free view of the active defense decision (rate limiter or
+ * adaptive defense engine) attached to an execute-mock response.
+ *
+ * It carries only normalised defense metadata — NEVER a token, secret, raw
+ * header, raw environment, raw stack trace, or raw request input.
+ */
+export interface DefenseDecisionView {
+  action: DefenseActionView;
+  source: DefenseSourceView;
+  reason: string;
+  retryAfterMs?: number;
+  escalation?: RiskEscalationView;
+}
+
+/**
+ * Public, secret-free view of a registered rate-limit policy.
+ *
+ * Returned by `GET /v1/defense/rate-limits`. Pure configuration metadata.
+ */
+export interface RateLimitPolicyView {
+  id: string;
+  scope: 'agent' | 'compartment' | 'session' | 'tool';
+  maxRequests: number;
+  windowMs: number;
+  action: DefenseActionView;
+  enabled: boolean;
+}
+
+/** Response body for `GET /v1/defense/rate-limits`. */
+export interface RateLimitPoliciesHttpResponse {
+  policies: RateLimitPolicyView[];
+}
+
+/**
+ * Public, secret-free view of a temporary capability block.
+ *
+ * Returned by `GET /v1/defense/temporary-blocks`. Pure metadata — never a
+ * token, secret, or raw request input.
+ */
+export interface TemporaryCapabilityBlockView {
+  id: string;
+  createdAt: number;
+  expiresAt: number;
+  agentId?: string;
+  compartmentId?: string;
+  tool?: string;
+  reason: string;
+}
+
+/** Response body for `GET /v1/defense/temporary-blocks`. */
+export interface TemporaryBlocksHttpResponse {
+  blocks: TemporaryCapabilityBlockView[];
+}
+
+/**
+ * Public, secret-free view of a registered adaptive defense policy.
+ *
+ * Returned by `GET /v1/defense/adaptive-policies`. Pure configuration metadata.
+ */
+export interface AdaptiveDefensePolicyView {
+  id: string;
+  triggerAnomalyTypes: string[];
+  triggerIncidentSeverities: string[];
+  resultingAction: DefenseActionView;
+  cooldownMs?: number;
+  escalationRiskLevel?: RiskLevelView;
+  enabled: boolean;
+}
+
+/** Response body for `GET /v1/defense/adaptive-policies`. */
+export interface AdaptiveDefensePoliciesHttpResponse {
+  policies: AdaptiveDefensePolicyView[];
 }
 
 /**
@@ -378,7 +478,12 @@ export type SecurityEventTypeView =
   | 'execution_started'
   | 'execution_succeeded'
   | 'execution_blocked'
-  | 'execution_failed';
+  | 'execution_failed'
+  | 'rate_limit_triggered'
+  | 'cooldown_applied'
+  | 'temporary_block_applied'
+  | 'risk_escalated'
+  | 'adaptive_defense_triggered';
 
 /**
  * Public, secret-free view of a recorded security event.

@@ -53,7 +53,12 @@ export type SecurityEventType =
   | 'execution_started'
   | 'execution_succeeded'
   | 'execution_blocked'
-  | 'execution_failed';
+  | 'execution_failed'
+  | 'rate_limit_triggered'
+  | 'cooldown_applied'
+  | 'temporary_block_applied'
+  | 'risk_escalated'
+  | 'adaptive_defense_triggered';
 
 /**
  * A single, immutable security event.
