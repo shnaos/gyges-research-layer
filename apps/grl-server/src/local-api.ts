@@ -6,10 +6,15 @@ import {
   ApprovalQueue,
   ApprovalRequest,
   AuditQuery,
+  AdaptiveDefenseEngine,
+  AdaptiveDefensePolicy,
   CapabilityFirewall,
   CapabilityRequest,
   CapabilityTool,
+  CapabilityRateLimiter,
+  DefenseAction,
   DEFAULT_APPROVAL_TTL_MS,
+  DynamicRiskEscalation,
   ExecutionEngine,
   ExecutionRequest,
   IdentityCompartment,
@@ -17,6 +22,8 @@ import {
   PrivacyBoundaryDecision,
   PrivacyBoundaryEngine,
   PrivacyBoundaryRule,
+  RateLimitDecision,
+  RateLimitPolicy,
   RiskLevel,
   RoutingDecision,
   RuntimeAnomaly,
@@ -32,14 +39,18 @@ import {
   SessionManager,
   SessionRecord,
   SessionReusePolicy,
+  TemporaryCapabilityBlock,
   TransportCapabilityAudit,
   TransportCapabilityRegistry,
   TransportManifest,
   TransportPolicyEngine,
   TransportPolicyError,
   TransportPolicyRule,
+  escalateRisk,
+  BOOTSTRAP_ADAPTIVE_DEFENSE_POLICIES,
   BOOTSTRAP_HEURISTIC_RULES,
   BOOTSTRAP_PRIVACY_BOUNDARY_RULES,
+  BOOTSTRAP_RATE_LIMIT_POLICIES,
   BOOTSTRAP_TRANSPORT_MANIFESTS,
   BOOTSTRAP_TRANSPORT_POLICY_RULES,
   STRICT_SANDBOX_POLICY
@@ -51,10 +62,13 @@ import {
 } from '../../../packages/policy-engine/src/index.js';
 import {
   ApprovalDecisionHttpResponse,
+  AdaptiveDefensePoliciesHttpResponse,
+  AdaptiveDefensePolicyView,
   AuditEventHttpResponse,
   AuditEventsHttpResponse,
   CompartmentsHttpResponse,
   CompartmentView,
+  DefenseDecisionView,
   EvaluateCapabilityHttpRequest,
   EvaluateCapabilityHttpResponse,
   ExecuteMockCapabilityHttpResponse,
@@ -65,6 +79,8 @@ import {
   PrivacyBoundariesHttpResponse,
   PrivacyBoundaryDecisionView,
   PrivacyBoundaryRuleView,
+  RateLimitPoliciesHttpResponse,
+  RateLimitPolicyView,
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
   RuntimeAnomaliesHttpResponse,
@@ -76,6 +92,8 @@ import {
   SecurityEventView,
   SessionsHttpResponse,
   SessionView,
+  TemporaryBlocksHttpResponse,
+  TemporaryCapabilityBlockView,
   TransportCapabilityAuditView,
   TransportManifestView,
   TransportPoliciesHttpResponse,
@@ -275,6 +293,38 @@ export function buildIncidentDetector(store?: IncidentStore): IncidentDetector {
   return new IncidentDetector(store ? { store } : {});
 }
 
+/**
+ * Build the Sprint 13 Capability Rate Limiter seeded with the bootstrap
+ * rate-limit policies.
+ *
+ * The limiter is deterministic and purely in-memory: it counts requests over
+ * static sliding windows and holds temporary capability blocks. It performs NO
+ * network, persistence, AI/ML, or semantic classification work.
+ */
+export function buildCapabilityRateLimiter(): CapabilityRateLimiter {
+  const limiter = new CapabilityRateLimiter();
+  for (const policy of BOOTSTRAP_RATE_LIMIT_POLICIES) {
+    limiter.registerPolicy(policy);
+  }
+  return limiter;
+}
+
+/**
+ * Build the Sprint 13 Adaptive Defense Engine seeded with the bootstrap adaptive
+ * defense policies.
+ *
+ * The engine is deterministic and purely in-memory: it maps the runtime
+ * anomaly/incident vocabulary onto active defense actions. It performs NO
+ * network, persistence, AI/ML, or semantic classification work.
+ */
+export function buildAdaptiveDefenseEngine(): AdaptiveDefenseEngine {
+  const engine = new AdaptiveDefenseEngine();
+  for (const policy of BOOTSTRAP_ADAPTIVE_DEFENSE_POLICIES) {
+    engine.registerPolicy(policy);
+  }
+  return engine;
+}
+
 /** Every valid {@link SecurityEventType}, used to validate audit query params. */
 export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'capability_allowed',
@@ -293,7 +343,12 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'execution_started',
   'execution_succeeded',
   'execution_blocked',
-  'execution_failed'
+  'execution_failed',
+  'rate_limit_triggered',
+  'cooldown_applied',
+  'temporary_block_applied',
+  'risk_escalated',
+  'adaptive_defense_triggered'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -535,6 +590,52 @@ function toRuntimeIncidentView(incident: RuntimeIncident): RuntimeIncidentView {
   };
 }
 
+/** Project a {@link RateLimitPolicy} into its public, secret-free HTTP view. */
+function toRateLimitPolicyView(policy: RateLimitPolicy): RateLimitPolicyView {
+  return {
+    id: policy.id,
+    scope: policy.scope,
+    maxRequests: policy.maxRequests,
+    windowMs: policy.windowMs,
+    action: policy.action,
+    enabled: policy.enabled
+  };
+}
+
+/** Project a {@link TemporaryCapabilityBlock} into its public HTTP view. */
+function toTemporaryBlockView(
+  block: TemporaryCapabilityBlock
+): TemporaryCapabilityBlockView {
+  const view: TemporaryCapabilityBlockView = {
+    id: block.id,
+    createdAt: block.createdAt,
+    expiresAt: block.expiresAt,
+    reason: block.reason
+  };
+  if (block.agentId !== undefined) view.agentId = block.agentId;
+  if (block.compartmentId !== undefined) view.compartmentId = block.compartmentId;
+  if (block.tool !== undefined) view.tool = block.tool;
+  return view;
+}
+
+/** Project an {@link AdaptiveDefensePolicy} into its public HTTP view. */
+function toAdaptiveDefensePolicyView(
+  policy: AdaptiveDefensePolicy
+): AdaptiveDefensePolicyView {
+  const view: AdaptiveDefensePolicyView = {
+    id: policy.id,
+    triggerAnomalyTypes: [...policy.triggerAnomalyTypes],
+    triggerIncidentSeverities: [...policy.triggerIncidentSeverities],
+    resultingAction: policy.resultingAction,
+    enabled: policy.enabled
+  };
+  if (policy.cooldownMs !== undefined) view.cooldownMs = policy.cooldownMs;
+  if (policy.escalationRiskLevel !== undefined) {
+    view.escalationRiskLevel = policy.escalationRiskLevel;
+  }
+  return view;
+}
+
 /**
  * Parse and validate the `GET /v1/audit/events` query string into an
  * {@link AuditQuery}. Returns `{ error }` on the first invalid parameter so the
@@ -677,6 +778,23 @@ export interface LocalApiOptions {
    * detector is created. It performs no persistence or network work.
    */
   incidentDetector?: IncidentDetector;
+  /**
+   * Capability Rate Limiter (Sprint 13). It runs FIRST in the execute-mock
+   * defense pipeline (before the firewall), counting requests over static
+   * sliding windows and enforcing temporary capability blocks. When omitted, a
+   * bootstrap limiter seeded with the static rate-limit policies is created. It
+   * performs no network, persistence, AI/ML, or semantic classification work.
+   */
+  rateLimiter?: CapabilityRateLimiter;
+  /**
+   * Adaptive Defense Engine (Sprint 13). It runs after the rate limiter (still
+   * before the firewall), mapping the accumulated runtime anomalies/incidents
+   * onto active defense actions (cooldown / temporary block / require approval /
+   * risk escalation). When omitted, a bootstrap engine seeded with the static
+   * adaptive policies is created. It performs no network, persistence, AI/ML, or
+   * semantic classification work.
+   */
+  adaptiveDefenseEngine?: AdaptiveDefenseEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -894,6 +1012,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     options.heuristicsEngine ?? buildRuntimeSecurityHeuristicsEngine();
   const incidentDetector =
     options.incidentDetector ?? buildIncidentDetector();
+  const rateLimiter = options.rateLimiter ?? buildCapabilityRateLimiter();
+  const adaptiveDefenseEngine =
+    options.adaptiveDefenseEngine ?? buildAdaptiveDefenseEngine();
 
   /**
    * Emit a security event AND feed it to the runtime heuristics engine.
@@ -1070,6 +1191,222 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // a fresh local UUID — never a token, secret, or any caller-supplied value.
     const requestId = randomUUID();
     const inputDescriptor = describeInput(request.input);
+
+    // Defense annotation attached to the final response when a risk escalation
+    // lets the request continue. Terminal defense actions build and return their
+    // own response below.
+    let defenseView: DefenseDecisionView | undefined;
+
+    // Discriminated outcome of applying one non-`allow` defense action.
+    type DefenseTerminal =
+      | { kind: 'respond'; body: ExecuteMockCapabilityHttpResponse }
+      | {
+          kind: 'escalate';
+          escalation: DynamicRiskEscalation;
+          defense: DefenseDecisionView;
+        }
+      | { kind: 'continue' };
+
+    // Apply one non-`allow` defense action. Emits the appropriate audit event
+    // and either builds a terminal deny/pending response, signals an in-place
+    // risk escalation, or asks the caller to continue. Never logs tokens, raw
+    // input, or secrets — only normalised defense metadata.
+    const resolveDefense = (
+      source: 'rate_limit' | 'adaptive_defense',
+      action: DefenseAction,
+      reason: string,
+      retryAfterMs: number | undefined,
+      escalationTarget: RiskLevel | undefined
+    ): DefenseTerminal => {
+      if (action === 'cooldown' || action === 'temporary_block') {
+        observeSecurity({
+          type:
+            action === 'cooldown' ? 'cooldown_applied' : 'temporary_block_applied',
+          severity: 'warning',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          message:
+            action === 'cooldown'
+              ? 'Cooldown applied by defense.'
+              : 'Temporary block applied by defense.',
+          metadata: { tool: request.tool, source, reason }
+        });
+        const defense: DefenseDecisionView = { action, source, reason };
+        if (retryAfterMs !== undefined) defense.retryAfterMs = retryAfterMs;
+        return {
+          kind: 'respond',
+          body: { decision: 'denied', reason, defense }
+        };
+      }
+      if (action === 'require_approval') {
+        const created = approvalQueue.create({
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          tool: request.tool as CapabilityTool,
+          riskLevel: request.riskLevel as RiskLevel,
+          input: request.input,
+          reason
+        });
+        observeSecurity({
+          type: 'approval_pending',
+          severity: 'info',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          approvalRequestId: created.request.id,
+          message: 'Defense requires human approval.',
+          metadata: {
+            tool: request.tool,
+            riskLevel: request.riskLevel,
+            source,
+            reason
+          }
+        });
+        const defense: DefenseDecisionView = { action, source, reason };
+        return {
+          kind: 'respond',
+          body: {
+            decision: 'pending',
+            reason,
+            defense,
+            approvalRequestId: created.request.id,
+            approvalToken: created.token.value
+          }
+        };
+      }
+      if (action === 'escalate_risk') {
+        const target = escalationTarget ?? 'high';
+        const escalation = escalateRisk(
+          request.riskLevel as RiskLevel,
+          target,
+          reason
+        );
+        // A no-op escalation (target not strictly higher) lets the request run.
+        if (!escalation) return { kind: 'continue' };
+        observeSecurity({
+          type: 'risk_escalated',
+          severity: 'warning',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          message: 'Risk escalated by adaptive defense.',
+          metadata: {
+            tool: request.tool,
+            source,
+            originalRisk: escalation.originalRisk,
+            escalatedRisk: escalation.escalatedRisk,
+            reason
+          }
+        });
+        const defense: DefenseDecisionView = {
+          action,
+          source,
+          reason,
+          escalation: {
+            originalRisk: escalation.originalRisk,
+            escalatedRisk: escalation.escalatedRisk,
+            reason: escalation.reason
+          }
+        };
+        return { kind: 'escalate', escalation, defense };
+      }
+      return { kind: 'continue' };
+    };
+
+    // ── Defense pipeline (Sprint 13) — runs BEFORE the Capability Firewall ──
+    //   1. Capability Rate Limiter (sliding windows + temporary blocks)
+    //   2. Adaptive Defense Engine (anomaly/incident-driven actions)
+    // Both are fail-safe: an `allow` decision is invisible. A non-`allow`
+    // decision either ends the request (cooldown/temporary_block → "denied";
+    // require_approval → "pending") or escalates the effective risk level in
+    // place before the firewall / routing / privacy boundary run.
+
+    // 1. Capability Rate Limiter.
+    const rateDecision: RateLimitDecision = rateLimiter.evaluate({
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      timestamp: Date.now()
+    });
+    if (rateDecision.action !== 'allow') {
+      observeSecurity({
+        type: 'rate_limit_triggered',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Rate limit triggered.',
+        metadata: {
+          tool: request.tool,
+          action: rateDecision.action,
+          reason: rateDecision.reason
+        }
+      });
+      const terminal = resolveDefense(
+        'rate_limit',
+        rateDecision.action,
+        rateDecision.reason,
+        rateDecision.retryAfterMs,
+        undefined
+      );
+      if (terminal.kind === 'respond') {
+        return res.status(200).json(terminal.body);
+      }
+      if (terminal.kind === 'escalate') {
+        request.riskLevel = terminal.escalation.escalatedRisk;
+        defenseView = terminal.defense;
+      }
+    }
+
+    // 2. Adaptive Defense Engine, driven by the accumulated runtime anomalies /
+    // open incidents. Decisions are deterministic; the strongest one wins.
+    const adaptiveDecisions = adaptiveDefenseEngine.evaluate({
+      anomalies: heuristicsEngine.queryAnomalies(),
+      incidents: incidentDetector.listIncidents('open')
+    });
+    if (adaptiveDecisions.length > 0) {
+      observeSecurity({
+        type: 'adaptive_defense_triggered',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Adaptive defense triggered.',
+        metadata: {
+          tool: request.tool,
+          actions: adaptiveDecisions.map((decision) => decision.action)
+        }
+      });
+      // Precedence: a hard block beats a cooldown beats an approval beats an
+      // escalation (which still lets the request proceed at a higher risk).
+      const precedence: DefenseAction[] = [
+        'temporary_block',
+        'cooldown',
+        'require_approval',
+        'escalate_risk'
+      ];
+      const chosen = precedence
+        .map((action) => adaptiveDecisions.find((d) => d.action === action))
+        .find((decision) => decision !== undefined);
+      if (chosen) {
+        const terminal = resolveDefense(
+          'adaptive_defense',
+          chosen.action,
+          chosen.reason,
+          chosen.cooldownMs,
+          chosen.escalation?.escalatedRisk
+        );
+        if (terminal.kind === 'respond') {
+          return res.status(200).json(terminal.body);
+        }
+        if (terminal.kind === 'escalate') {
+          request.riskLevel = terminal.escalation.escalatedRisk;
+          defenseView = terminal.defense;
+        }
+      }
+    }
+
     const capabilityRequest: CapabilityRequest = {
       agentId: request.agentId,
       compartment: request.compartmentId,
@@ -1099,6 +1436,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         decision: 'denied',
         reason: decision.reason
       };
+      if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
 
@@ -1134,6 +1472,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
+      if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
 
@@ -1189,6 +1528,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           decision: 'denied',
           reason: `No transport routing rule available: ${err.message}`
         };
+        if (defenseView !== undefined) response.defense = defenseView;
         return res.status(200).json(response);
       }
       throw err;
@@ -1251,6 +1591,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         routing: toRoutingDecisionView(routing),
         privacyBoundary: privacyView
       };
+      if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
 
@@ -1288,6 +1629,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
+      if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
 
@@ -1476,6 +1818,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (result.sandbox !== undefined) {
       response.sandbox = toSandboxDecisionView(result.sandbox);
     }
+    if (defenseView !== undefined) response.defense = defenseView;
     return res.status(200).json(response);
   });
   app.all('/v1/capabilities/execute-mock', (_req, res) => {
@@ -1682,6 +2025,48 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   app.all('/v1/security/incidents/:id', (_req, res) => {
     res.status(405).json({
       error: 'Method not allowed. Use GET /v1/security/incidents/:id.'
+    });
+  });
+
+  // ── Adaptive Defense & Rate Limiting read endpoints (Sprint 13) ──
+  // Metadata only: policy shapes, active temporary blocks, adaptive policies.
+  // Never any token, secret, or raw caller input.
+  app.get('/v1/defense/rate-limits', (_req, res) => {
+    const policies: RateLimitPolicyView[] = rateLimiter
+      .listPolicies()
+      .map(toRateLimitPolicyView);
+    const body: RateLimitPoliciesHttpResponse = { policies };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/defense/rate-limits', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/defense/rate-limits.' });
+  });
+
+  app.get('/v1/defense/temporary-blocks', (_req, res) => {
+    const blocks: TemporaryCapabilityBlockView[] = rateLimiter
+      .listTemporaryBlocks()
+      .map(toTemporaryBlockView);
+    const body: TemporaryBlocksHttpResponse = { blocks };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/defense/temporary-blocks', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/defense/temporary-blocks.'
+    });
+  });
+
+  app.get('/v1/defense/adaptive-policies', (_req, res) => {
+    const policies: AdaptiveDefensePolicyView[] = adaptiveDefenseEngine
+      .listPolicies()
+      .map(toAdaptiveDefensePolicyView);
+    const body: AdaptiveDefensePoliciesHttpResponse = { policies };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/defense/adaptive-policies', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/defense/adaptive-policies.'
     });
   });
 
