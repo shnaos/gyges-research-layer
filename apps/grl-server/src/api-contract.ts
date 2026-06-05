@@ -356,3 +356,58 @@ export interface SandboxDecisionView {
   action: 'allow' | 'block';
   violations: SandboxViolationView[];
 }
+
+/** Severity of an audited security event. */
+export type EventSeverityView = 'debug' | 'info' | 'warning' | 'critical';
+
+/** Normalised type of an audited security event. */
+export type SecurityEventTypeView =
+  | 'capability_allowed'
+  | 'capability_denied'
+  | 'approval_pending'
+  | 'approval_approved'
+  | 'approval_rejected'
+  | 'privacy_boundary_blocked'
+  | 'privacy_boundary_rotation'
+  | 'routing_resolved'
+  | 'session_created'
+  | 'session_rotated'
+  | 'session_revoked'
+  | 'sandbox_allowed'
+  | 'sandbox_blocked'
+  | 'execution_started'
+  | 'execution_succeeded'
+  | 'execution_blocked'
+  | 'execution_failed';
+
+/**
+ * Public, secret-free view of a recorded security event.
+ *
+ * Returned by `GET /v1/audit/events` and `GET /v1/audit/events/:id`. It carries
+ * only normalised, minimal metadata — NEVER an approval token, secret, raw HTTP
+ * header, raw environment, raw stack trace, or raw request input.
+ */
+export interface SecurityEventView {
+  id: string;
+  timestamp: number;
+  type: SecurityEventTypeView;
+  severity: EventSeverityView;
+  agentId?: string;
+  compartmentId?: string;
+  sessionId?: string;
+  requestId?: string;
+  executionId?: string;
+  approvalRequestId?: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Response body for `GET /v1/audit/events`. */
+export interface AuditEventsHttpResponse {
+  events: SecurityEventView[];
+}
+
+/** Response body for `GET /v1/audit/events/:id`. */
+export interface AuditEventHttpResponse {
+  event: SecurityEventView;
+}
