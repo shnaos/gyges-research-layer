@@ -67,6 +67,8 @@ export * from './adaptive-defense/index.js';
 
 export * from './trust-reputation/index.js';
 
+export * from './runtime-config/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

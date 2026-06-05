@@ -66,7 +66,11 @@ export type SecurityEventType =
   | 'capability_graph_allowed'
   | 'capability_graph_blocked'
   | 'capability_graph_approval_required'
-  | 'capability_graph_rotation_required';
+  | 'capability_graph_rotation_required'
+  | 'config_loaded'
+  | 'config_reloaded'
+  | 'config_reload_failed'
+  | 'config_validation_failed';
 
 /**
  * A single, immutable security event.
