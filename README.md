@@ -6,81 +6,123 @@ Local-first capability firewall and identity compartmentalization gateway for AI
 
 AI agents doing web research can leak identity, intent, query correlation, and behavioral fingerprints. Gyges Research Layer (GRL) places a defensive layer between agent tools and the web.
 
+## GRL is NOT
+
+- a browser
+- a crawler
+- a proxy chain
+- a Tor replacement
+- an anonymous VPN
+- a guarantee of anonymity or perfect OPSEC
+
+GRL is a **privacy layer**, not an anonymity system. See [Security Model](#security-model) and [Non-Goals](#non-goals) below.
+
 ## Architecture
 
 ```text
 Agent
 ↓
-Capability Firewall   (packages/core)
+Capability Graph           (packages/core — transition rules, isolation)
 ↓
-Policy Engine         (packages/policy-engine, deny-by-default + transport enforcement)
+Trust / Adaptive Defense   (packages/core — trust scoring, rate limits, anomaly detection)
 ↓
-Identity Compartment  (packages/identity-compartment)
+Capability Firewall        (packages/core — deny-by-default decision)
 ↓
-Session Manager       (packages/identity-compartment)
+Approval Queue             (packages/core — human-in-the-loop, when required)
 ↓
-Transport Router      (packages/transport-router, direct / tor / proxy)
+Privacy Boundary           (packages/core — compartment isolation, anti-correlation)
 ↓
-SearXNG Adapter       (packages/search-adapter-searxng, isolated, transport-bound)
+Session Manager            (packages/core — session lifecycle, rotation)
 ↓
-Web
+Transport Policy           (packages/core — decides transport/isolation)
+↓
+Sandbox                    (packages/core — per-transport permission evaluation)
+↓
+Execution Engine           (packages/core — runs the chosen transport)
+↓
+Audit / Incidents          (packages/core — append-only audit trail, incident detection)
 ```
 
-Server entry point: `apps/grl-server` exposes `POST /capabilities/execute`.
+Server entry point: `apps/grl-server` exposes `POST /v1/capabilities/execute` and `POST /v1/capabilities/execute-mock`.
 
-## Sprint 2 status — transport isolation + identity compartmentalization
+## Security Model
 
-What GRL now does, on top of the Sprint 1 capability firewall:
+GRL enforces a **deny-by-default, fail-closed, local-first** security model:
 
-- TypeScript monorepo with a single Node.js API server (`apps/grl-server`)
-- Deny-by-default capability evaluation through the Capability Firewall
-- YAML policy loading from `policies/default.yaml`
-- Explicit allow rules by `agentId + compartment + tool + risk`, each bound to a transport
-- **Transport Router** selecting `direct`, `tor`, or `proxy` — chosen by policy, never by the agent
-- **Tor / proxy routing over SOCKS5** with remote DNS (no local DNS leak) and per-session circuit isolation
-- **Fail-closed transports**: if Tor/proxy cannot be established the request is denied, never downgraded to direct
-- **Identity compartments** that each own isolated runtime state: `sessionId`, `cookieJar`, `userAgent`, `transport`, `dnsPolicy`
-- **Session Manager** lifecycle: create, rotate identity, destroy, idle/TTL expiration
-- **Anti-correlation guarantees**: no shared cookies, sessions, or user-agents between compartments; no transport mixing within a compartment
-- Isolated SearXNG adapter that receives only a sanitized query and a transport-bound fetch client — it never sees the agent, compartment, or policy
-- A single capability entry point: `POST /capabilities/execute`
-- Local-only log file output (`logs/grl.log`)
-- Docker Compose for local SearXNG
-- Example local agent client
+- Every capability request is evaluated by a full policy pipeline before execution
+- No implicit allows — every allowed capability requires an explicit firewall rule
+- Transport is decided by policy, never by the agent
+- Compartments are isolated — no shared sessions, cookies, or state between compartments
+- Trust scores degrade on anomalous behavior and recover on clean execution
+- The audit trail is append-only; every decision is logged
+- Immutable runtime snapshots — config cannot be mutated at runtime
 
-What this still does **not** do (by design — see Non-goals in the roadmap):
-- No VPN, multi-hop routing, browser automation, scraping, or fingerprint spoofing
-- It is not a privacy browser and does not guarantee anonymity
-- It has no auth, database, UI, or cloud telemetry
+For the complete security documentation:
 
-## Transports
+- [`docs/security/threat-model.md`](docs/security/threat-model.md) — assets, adversaries, threat matrix
+- [`docs/security/trust-boundaries.md`](docs/security/trust-boundaries.md) — all trust boundaries with ASCII diagrams
+- [`docs/security/security-assumptions.md`](docs/security/security-assumptions.md) — what GRL assumes about its environment
+- [`docs/security/defensive-guarantees.md`](docs/security/defensive-guarantees.md) — formal security guarantees
+- [`docs/security/failure-modes.md`](docs/security/failure-modes.md) — failure mode catalog with recovery strategies
+- [`docs/security/attack-surfaces.md`](docs/security/attack-surfaces.md) — attack surface analysis
+- [`docs/security/incident-response.md`](docs/security/incident-response.md) — incident lifecycle and operator actions
+- [`docs/security/privacy-model.md`](docs/security/privacy-model.md) — privacy design and data minimization
 
-The transport is decided internally from policy + compartment + session — the
-agent only ever requests a `tool`. Supported transports:
+## Threat Model
 
-| Transport | Routing | DNS |
-| --------- | ------- | --- |
-| `direct`  | system network | system resolver |
-| `tor`     | SOCKS5 (default `127.0.0.1:9050`) with per-session circuit isolation | remote (via Tor) |
-| `proxy`   | SOCKS5 (configurable) | remote (via proxy) |
+GRL's threat model (see [`docs/security/threat-model.md`](docs/security/threat-model.md)) addresses:
 
-If a policy binds a capability to `tor` and Tor is unreachable, the request is
-denied (`502`). There is no silent fallback to `direct`.
+**Protected assets:** agent intent, runtime policies, compartment isolation, audit integrity, trust reputation, runtime configuration, operator visibility, transport isolation, session separation.
 
-## Principles
+**Adversary classes:** malicious website, compromised search engine, prompt-injected agent, hostile runtime plugin, over-privileged transport, local malware, operator mistakes, configuration corruption.
 
-- deny-by-default
-- no implicit capability
-- no cloud dependency
-- no tracking
-- no remote telemetry
-- no hidden external calls
-- deterministic policy decisions
-- explicit `agentId`, `compartment`, `tool`, `riskLevel` for every request
-- transport decided by policy, never by the agent
-- fail-closed transports, no silent downgrade, no implicit transport escalation
-- no cross-compartment state sharing (cookies, sessions, user-agents, transport)
-- privacy layer, not anonymity guarantee
+## Privacy Model
+
+GRL is **privacy-first** (see [`docs/security/privacy-model.md`](docs/security/privacy-model.md)):
+
+- All processing is local — no cloud, no remote API, no telemetry
+- Raw query content is never stored in the audit trail
+- No cookies, no browser storage, no token persistence
+- Compartment isolation prevents cross-task correlation
+- In-memory state only — no durable storage of sessions or audit events
+
+## Runtime Guarantees
+
+From [`docs/security/defensive-guarantees.md`](docs/security/defensive-guarantees.md):
+
+| Guarantee | Description |
+|-----------|-------------|
+| Fail-closed | Unknown/unevaluated requests are denied |
+| Immutable snapshots | Config is deep-frozen and checksummed after load |
+| Deterministic evaluation | Identical inputs always produce identical decisions |
+| Sandbox gating | No execution without sandbox policy evaluation |
+| Trust-based gating | Quarantined compartments are denied automatically |
+| Audit completeness | Every decision at every layer is audit-logged |
+
+## Non-Goals
+
+**GRL DOES NOT:**
+
+- guarantee endpoint anonymity
+- replace Tor or any onion routing network
+- replace browser sandboxing or OS-level process isolation
+- prevent host or kernel compromise
+- guarantee perfect OPSEC
+- classify the semantic maliciousness of search results
+- provide anti-forensics (GRL emits an audit trail by design)
+- enforce network-level firewalling
+
+## Security Principles
+
+- **local-first** — no cloud dependency, all processing on-machine
+- **deny-by-default** — no implicit capability
+- **fail-closed** — errors produce deny, not allow
+- **least privilege** — each transport has minimum declared permissions
+- **explicit transports** — transport decided by policy, never by the agent
+- **explicit permissions** — every capability requires an explicit allow rule
+- **immutable runtime state** — config deep-frozen and checksummed after load
+- **deterministic evaluation** — no randomness, no ML, no sampling
+- **defensive layering** — multiple independent gates before execution
 
 ## CLI Quickstart (Sprint 18)
 
@@ -128,9 +170,8 @@ Optional environment:
 
 - `SEARXNG_URL` (default: `http://localhost:8080`)
 - `PORT` (default: `3000`)
-- `TOR_SOCKS` SOCKS5 endpoint for `tor` transport (default: `127.0.0.1:9050`)
-- `PROXY_SOCKS` SOCKS5 endpoint for `proxy` transport (e.g. `127.0.0.1:1080`)
-- `TRANSPORT_TIMEOUT_MS` per-request transport timeout
+- `GRL_CONFIG_PATH` — path to runtime config JSON file
+- `GRL_CONFIG_WATCH=1` — enable hot-reload on config file changes
 
 Start the local search engine:
 
@@ -140,36 +181,17 @@ docker compose -f docker/docker-compose.yml up -d searxng
 
 ## Capability API
 
-The only endpoint is `POST /capabilities/execute`. Every request is evaluated by
-the firewall and denied unless an explicit allow rule matches. The agent never
-chooses its transport: the matched policy rule binds the capability to a
-transport, and the compartment is permanently isolated on that transport.
-
-Allowed request (executes the search):
+The primary execution endpoint is `POST /v1/capabilities/execute`. Every request is evaluated by the full policy pipeline (capability graph → trust/defense → firewall → privacy boundary → session → sandbox → execution → audit) and denied unless all gates pass.
 
 ```bash
-curl -X POST http://localhost:3000/capabilities/execute \
+curl -X POST http://127.0.0.1:8787/v1/capabilities/execute \
   -H 'Content-Type: application/json' \
   -d '{
     "agentId":"local-agent",
-    "compartment":"research",
+    "compartmentId":"research",
     "tool":"search",
     "riskLevel":"low",
-    "input":{"query":"ring of gyges"}
-  }'
-```
-
-Denied request (deny-by-default, returns HTTP 403):
-
-```bash
-curl -X POST http://localhost:3000/capabilities/execute \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "agentId":"local-agent",
-    "compartment":"personal",
-    "tool":"search",
-    "riskLevel":"low",
-    "input":{"query":"ring of gyges"}
+    "input":"ring of gyges"
   }'
 ```
 
@@ -181,11 +203,26 @@ npm --prefix examples/local-agent run start
 
 ## Documentation
 
-- `/docs/architecture.md`
-- `/docs/threat-model.md`
-- `/docs/roadmap.md`
-- `/CONTRIBUTING.md`
+### Security
+
+- [`docs/security/threat-model.md`](docs/security/threat-model.md)
+- [`docs/security/trust-boundaries.md`](docs/security/trust-boundaries.md)
+- [`docs/security/security-assumptions.md`](docs/security/security-assumptions.md)
+- [`docs/security/defensive-guarantees.md`](docs/security/defensive-guarantees.md)
+- [`docs/security/failure-modes.md`](docs/security/failure-modes.md)
+- [`docs/security/attack-surfaces.md`](docs/security/attack-surfaces.md)
+- [`docs/security/incident-response.md`](docs/security/incident-response.md)
+- [`docs/security/privacy-model.md`](docs/security/privacy-model.md)
+
+### Architecture
+
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/runtime-config.md`](docs/runtime-config.md)
+- [`docs/cli.md`](docs/cli.md)
+- [`docs/searxng-transport.md`](docs/searxng-transport.md)
+- [`docs/roadmap.md`](docs/roadmap.md)
 
 ## License
 
 MIT
+
