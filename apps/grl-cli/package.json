@@ -4,11 +4,9 @@
   "description": "CLI operator interface for the Gyges Research Layer — local-only, fail-closed.",
   "type": "module",
   "main": "dist/cli.js",
-  "types": "dist/cli.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/cli.js",
-      "types": "./dist/cli.d.ts"
+      "import": "./dist/cli.js"
     }
   },
   "files": [

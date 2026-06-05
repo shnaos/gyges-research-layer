@@ -78,28 +78,32 @@ const PACKAGES_WITH_EXPORTS: Array<{
   label: string;
   pkgPath: string;
   distMain: string;
+  requiresTypes: boolean;
 }> = [
   {
     label: '@gyges/core',
     pkgPath: 'packages/core/package.json',
     distMain: 'packages/core/dist/index.js',
+    requiresTypes: true,
   },
   {
     label: '@gyges/agent-sdk',
     pkgPath: 'packages/agent-sdk/package.json',
     distMain: 'packages/agent-sdk/dist/index.js',
+    requiresTypes: true,
   },
   {
     label: '@gyges/grl-cli',
     pkgPath: 'apps/grl-cli/package.json',
     distMain: 'apps/grl-cli/dist/cli.js',
+    requiresTypes: false, // binary tool, not a library
   },
 ];
 
 function checkPackageExports(): CheckResult[] {
   const results: CheckResult[] = [];
 
-  for (const { label, pkgPath, distMain } of PACKAGES_WITH_EXPORTS) {
+  for (const { label, pkgPath, distMain, requiresTypes } of PACKAGES_WITH_EXPORTS) {
     if (!exists(pkgPath)) {
       results.push(fail(`${label}: ${pkgPath} not found`));
       continue;
@@ -122,8 +126,10 @@ function checkPackageExports(): CheckResult[] {
     if (!pkg.main) results.push(fail(`${label}: missing "main" field`));
     else results.push(pass(`${label}: main="${pkg.main}"`));
 
-    if (!pkg.types) results.push(fail(`${label}: missing "types" field`));
-    else results.push(pass(`${label}: types="${pkg.types}"`));
+    if (requiresTypes) {
+      if (!pkg.types) results.push(fail(`${label}: missing "types" field`));
+      else results.push(pass(`${label}: types="${pkg.types}"`));
+    }
 
     if (!pkg.exports) results.push(fail(`${label}: missing "exports" field`));
     else results.push(pass(`${label}: "exports" field present`));

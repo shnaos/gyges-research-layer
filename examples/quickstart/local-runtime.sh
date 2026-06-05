@@ -39,7 +39,7 @@ if [[ ! -d "${REPO_ROOT}/apps/grl-cli/node_modules" ]]; then
 fi
 
 # 3. Build if dist doesn't exist
-if [[ ! -f "${REPO_ROOT}/apps/grl-server/dist/index.js" ]]; then
+if [[ ! -f "${REPO_ROOT}/apps/grl-server/dist/apps/grl-server/src/local-api.js" ]]; then
   echo ""
   echo "Building packages..."
   cd "${REPO_ROOT}" && npm run build
