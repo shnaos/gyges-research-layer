@@ -32,6 +32,9 @@ import { parseSearXngResponse } from './parser.js';
 /** The only capability tool SearXNG may execute. */
 const SUPPORTED_TOOL = 'search' as const;
 
+/** Transport kind identifier for SearXNG. */
+const TRANSPORT_KIND = 'searxng' as const;
+
 /**
  * Build the SearXNG search URL from a validated base URL and search parameters.
  *
@@ -116,7 +119,7 @@ function toSearchRequest(input: unknown): SearXngSearchRequest | null {
  * before construction if the config is disabled or invalid.
  */
 export class SearXngTransportAdapter implements TransportAdapter {
-  readonly kind = 'searxng' as const;
+  readonly kind = TRANSPORT_KIND;
 
   private readonly config: SearXngTransportConfig;
   private readonly now: () => number;

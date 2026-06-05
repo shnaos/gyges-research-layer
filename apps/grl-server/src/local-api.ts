@@ -3267,7 +3267,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     }
 
     // Sandbox audit.
-    const sandboxViolatioCodesExec = resultExec.sandbox
+    const sandboxViolationCodesExec = resultExec.sandbox
       ? resultExec.sandbox.violations.map((v) => v.code)
       : [];
     if (resultExec.sandbox !== undefined) {
@@ -3281,7 +3281,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           requestId,
           executionId: executionRequestExec.id,
           message: 'Adapter sandbox blocked execution.',
-          metadata: { tool: request.tool, transportKind: resultExec.transportKind, sandboxViolations: sandboxViolatioCodesExec }
+          metadata: { tool: request.tool, transportKind: resultExec.transportKind, sandboxViolations: sandboxViolationCodesExec }
         });
       } else {
         observeSecurity({
@@ -3310,7 +3310,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       requestId,
       executionId: executionRequestExec.id,
       message: `Execution ${resultExec.status}.`,
-      metadata: { tool: request.tool, transportKind: resultExec.transportKind, executionStatus: resultExec.status, ...(sandboxViolatioCodesExec.length > 0 ? { sandboxViolations: sandboxViolatioCodesExec } : {}) }
+      metadata: { tool: request.tool, transportKind: resultExec.transportKind, executionStatus: resultExec.status, ...(sandboxViolationCodesExec.length > 0 ? { sandboxViolations: sandboxViolationCodesExec } : {}) }
     });
 
     // Graph path recording on success.

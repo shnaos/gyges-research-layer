@@ -15,6 +15,15 @@
 
 import type { SearXngTransportConfig } from './types.js';
 
+/** Default loopback port for a locally-run SearXNG instance. */
+const DEFAULT_SEARXNG_PORT = 8080;
+
+/** Default request timeout in milliseconds. */
+const DEFAULT_TIMEOUT_MS = 5000;
+
+/** Default maximum number of results per search. */
+const DEFAULT_MAX_RESULTS = 10;
+
 /** Closed set of allowed loopback hostnames. */
 const ALLOWED_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
@@ -119,8 +128,8 @@ export function validateSearXngConfig(
  * `enabled: true`.
  */
 export const DEFAULT_SEARXNG_CONFIG: SearXngTransportConfig = {
-  baseUrl: 'http://127.0.0.1:8080',
-  timeoutMs: 5000,
-  maxResults: 10,
+  baseUrl: `http://127.0.0.1:${DEFAULT_SEARXNG_PORT}`,
+  timeoutMs: DEFAULT_TIMEOUT_MS,
+  maxResults: DEFAULT_MAX_RESULTS,
   enabled: false
 };
