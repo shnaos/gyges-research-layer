@@ -170,8 +170,16 @@ Optional environment:
 
 - `SEARXNG_URL` (default: `http://localhost:8080`)
 - `PORT` (default: `3000`)
+- `GRL_PROFILE` — runtime profile (`strict` | `balanced` | `research` | `development`, default: `balanced`)
 - `GRL_CONFIG_PATH` — path to runtime config JSON file
 - `GRL_CONFIG_WATCH=1` — enable hot-reload on config file changes
+
+Launch with a named profile:
+
+```bash
+GRL_PROFILE=strict npm run dev:server
+GRL_PROFILE=research npm run dev:server
+```
 
 Start the local search engine:
 
@@ -217,6 +225,7 @@ npm --prefix examples/local-agent run start
 ### Architecture
 
 - [`docs/architecture.md`](docs/architecture.md)
+- [`docs/runtime-profiles.md`](docs/runtime-profiles.md)
 - [`docs/runtime-config.md`](docs/runtime-config.md)
 - [`docs/cli.md`](docs/cli.md)
 - [`docs/searxng-transport.md`](docs/searxng-transport.md)

@@ -516,7 +516,11 @@ export type SecurityEventTypeView =
   | 'config_loaded'
   | 'config_reloaded'
   | 'config_reload_failed'
-  | 'config_validation_failed';
+  | 'config_validation_failed'
+  | 'runtime_profile_loaded'
+  | 'runtime_profile_switched'
+  | 'runtime_profile_switch_failed'
+  | 'policy_pack_applied';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -854,3 +858,64 @@ export type ExecuteCapabilityHttpRequest = EvaluateCapabilityHttpRequest;
  * execution block will be `"searxng"` when a real transport is used.
  */
 export type ExecuteCapabilityHttpResponse = ExecuteMockCapabilityHttpResponse;
+
+// ---------------------------------------------------------------------------
+// Sprint 20 — Policy Packs & Runtime Profiles surface.
+//
+// These responses expose only secret-free profile/pack metadata. They NEVER
+// carry a token, secret, credential, or raw request input. The full resolved
+// RuntimeConfig is NOT returned — only the profile name, pack ids, and a
+// summary of the active configuration.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal view of a runtime profile returned by the API.
+ *
+ * Secret-free metadata only: name, description, inheritance, pack ids,
+ * enabled state. The full `overrides` block is omitted to avoid leaking
+ * internal policy state over HTTP.
+ */
+export interface RuntimeProfileView {
+  name: string;
+  description?: string;
+  extends?: string;
+  packIds: string[];
+  enabled: boolean;
+}
+
+/**
+ * Minimal view of a policy pack returned by the API.
+ *
+ * Secret-free metadata only: id, description, and the set of policy-field
+ * names the pack defines (the actual policy values are NOT returned — they
+ * contain no secrets but the shape is internal).
+ */
+export interface PolicyPackView {
+  id: string;
+  description?: string;
+  /** Names of the RuntimeConfig fields this pack defines. */
+  definedFields: string[];
+}
+
+/** Response body for `GET /v1/runtime/profiles`. */
+export interface RuntimeProfilesHttpResponse {
+  profiles: RuntimeProfileView[];
+}
+
+/** Response body for `GET /v1/runtime/profile` (active profile). */
+export interface RuntimeProfileHttpResponse {
+  profile: RuntimeProfileView;
+}
+
+/** Response body for `GET /v1/runtime/packs`. */
+export interface RuntimePacksHttpResponse {
+  packs: PolicyPackView[];
+}
+
+/** Response body for `POST /v1/runtime/profile/:name` (profile switch). */
+export interface RuntimeProfileSwitchHttpResponse {
+  profile: RuntimeProfileView;
+  /** ISO-8601 timestamp of the switch. */
+  switchedAt: number;
+}
+

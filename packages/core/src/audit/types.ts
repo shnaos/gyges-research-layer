@@ -70,7 +70,11 @@ export type SecurityEventType =
   | 'config_loaded'
   | 'config_reloaded'
   | 'config_reload_failed'
-  | 'config_validation_failed';
+  | 'config_validation_failed'
+  | 'runtime_profile_loaded'
+  | 'runtime_profile_switched'
+  | 'runtime_profile_switch_failed'
+  | 'policy_pack_applied';
 
 /**
  * A single, immutable security event.
