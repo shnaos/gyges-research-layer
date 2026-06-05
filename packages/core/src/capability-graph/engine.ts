@@ -261,8 +261,8 @@ export class CapabilityGraphEngine {
    * Decision precedence (most restrictive first):
    *   1. no / disabled policy                       → block (fail-closed)
    *   2. prospective path length > maxPathLength     → block
-   *   3. first capability of the compartment         → allow (block if high &
-   *      blockOnHighRiskPath)
+   *   3. first capability of the compartment         → allow (unconditional;
+   *      downstream gates still decide its fate)
    *   4. same tool                                   → allow (block if path risk
    *      high & blockOnHighRiskPath)
    *   5. tool change with no enabled transition rule → block
@@ -297,11 +297,11 @@ export class CapabilityGraphEngine {
       );
     }
 
-    // 3. first capability of the compartment.
+    // 3. first capability of the compartment. Rule 1 is unconditional: the very
+    // first capability always bootstraps the path (downstream gates — firewall,
+    // trust, defense — still decide its fate). High-risk-PATH blocking (rule 6)
+    // only applies once a path already exists.
     if (path.length === 0) {
-      if (policy.blockOnHighRiskPath && input.riskLevel === 'high') {
-        return blocked('First capability is high risk; blocked by isolation policy.');
-      }
       return {
         action: 'allow',
         risk: pathRisk,

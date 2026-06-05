@@ -11,6 +11,13 @@ import {
   CapabilityFirewall,
   CapabilityRequest,
   CapabilityTool,
+  CapabilityGraphEngine,
+  CapabilityEdge as CapabilityGraphEdge,
+  CapabilityGraphFilter,
+  CapabilityNode as CapabilityGraphNode,
+  CapabilityPathDecision,
+  CapabilityTransitionRule,
+  DependencyIsolationPolicy,
   CapabilityRateLimiter,
   CompartmentTrustEngine,
   DefenseAction,
@@ -53,6 +60,8 @@ import {
   TransportPolicyRule,
   escalateRisk,
   BOOTSTRAP_ADAPTIVE_DEFENSE_POLICIES,
+  BOOTSTRAP_CAPABILITY_TRANSITION_RULES,
+  BOOTSTRAP_DEPENDENCY_ISOLATION_POLICY,
   BOOTSTRAP_HEURISTIC_RULES,
   BOOTSTRAP_PRIVACY_BOUNDARY_RULES,
   BOOTSTRAP_RATE_LIMIT_POLICIES,
@@ -71,9 +80,18 @@ import {
   AdaptiveDefensePolicyView,
   AuditEventHttpResponse,
   AuditEventsHttpResponse,
+  CapabilityEdgeView,
+  CapabilityGraphEdgesHttpResponse,
+  CapabilityGraphIsolationPoliciesHttpResponse,
+  CapabilityGraphNodesHttpResponse,
+  CapabilityGraphTransitionRulesHttpResponse,
+  CapabilityNodeView,
+  CapabilityPathDecisionView,
+  CapabilityTransitionRuleView,
   CompartmentsHttpResponse,
   CompartmentView,
   DefenseDecisionView,
+  DependencyIsolationPolicyView,
   EvaluateCapabilityHttpRequest,
   EvaluateCapabilityHttpResponse,
   ExecuteMockCapabilityHttpResponse,
@@ -350,6 +368,26 @@ export function buildCompartmentTrustEngine(): CompartmentTrustEngine {
 }
 
 /**
+ * Build the Sprint 15 Capability Graph Engine.
+ *
+ * The engine is deterministic and purely in-memory: it models capabilities as a
+ * graph of nodes and edges, tracks each compartment's execution path, and
+ * evaluates a prospective capability against its transition rules and
+ * dependency-isolation policy. It performs NO network, persistence, AI/ML, or
+ * semantic classification work and never stores tokens, secrets, or raw request
+ * input. It is seeded with the bootstrap transition rules and the single static
+ * `research` dependency-isolation policy.
+ */
+export function buildCapabilityGraphEngine(): CapabilityGraphEngine {
+  const engine = new CapabilityGraphEngine();
+  for (const rule of BOOTSTRAP_CAPABILITY_TRANSITION_RULES) {
+    engine.registerTransitionRule(rule);
+  }
+  engine.registerIsolationPolicy(BOOTSTRAP_DEPENDENCY_ISOLATION_POLICY);
+  return engine;
+}
+
+/**
  * The subset of {@link SecurityEventType}s emitted by the trust layer itself.
  * Kept as a single shared type so the severity table and the emit helper stay
  * in sync if new trust audit events are added.
@@ -387,7 +425,11 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'trust_score_changed',
   'compartment_restricted',
   'compartment_quarantined',
-  'trust_recovered'
+  'trust_recovered',
+  'capability_graph_allowed',
+  'capability_graph_blocked',
+  'capability_graph_approval_required',
+  'capability_graph_rotation_required'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -717,6 +759,73 @@ function toReputationProfileView(
   };
 }
 
+/** Project a {@link CapabilityGraphNode} into its public, secret-free HTTP view. */
+function toCapabilityNodeView(node: CapabilityGraphNode): CapabilityNodeView {
+  const view: CapabilityNodeView = {
+    id: node.id,
+    kind: node.kind,
+    createdAt: node.createdAt
+  };
+  if (node.agentId !== undefined) view.agentId = node.agentId;
+  if (node.compartmentId !== undefined) view.compartmentId = node.compartmentId;
+  if (node.tool !== undefined) view.tool = node.tool;
+  if (node.riskLevel !== undefined) view.riskLevel = node.riskLevel;
+  return view;
+}
+
+/** Project a {@link CapabilityGraphEdge} into its public, secret-free HTTP view. */
+function toCapabilityEdgeView(edge: CapabilityGraphEdge): CapabilityEdgeView {
+  return {
+    id: edge.id,
+    fromNodeId: edge.fromNodeId,
+    toNodeId: edge.toNodeId,
+    relation: edge.relation,
+    createdAt: edge.createdAt
+  };
+}
+
+/** Project a {@link CapabilityTransitionRule} into its public HTTP view. */
+function toCapabilityTransitionRuleView(
+  rule: CapabilityTransitionRule
+): CapabilityTransitionRuleView {
+  return {
+    id: rule.id,
+    fromTool: rule.fromTool,
+    toTool: rule.toTool,
+    maxAllowedRisk: rule.maxAllowedRisk,
+    actionOnViolation: rule.actionOnViolation,
+    enabled: rule.enabled
+  };
+}
+
+/** Project a {@link DependencyIsolationPolicy} into its public HTTP view. */
+function toDependencyIsolationPolicyView(
+  policy: DependencyIsolationPolicy
+): DependencyIsolationPolicyView {
+  return {
+    id: policy.id,
+    compartmentId: policy.compartmentId,
+    maxPathLength: policy.maxPathLength,
+    forbidCrossToolEscalation: policy.forbidCrossToolEscalation,
+    requireApprovalOnToolChange: policy.requireApprovalOnToolChange,
+    blockOnHighRiskPath: policy.blockOnHighRiskPath,
+    enabled: policy.enabled
+  };
+}
+
+/** Project a {@link CapabilityPathDecision} into its public, secret-free view. */
+function toCapabilityPathDecisionView(
+  decision: CapabilityPathDecision
+): CapabilityPathDecisionView {
+  return {
+    action: decision.action,
+    risk: decision.risk,
+    reason: decision.reason,
+    relatedNodeIds: [...decision.relatedNodeIds],
+    relatedEdgeIds: [...decision.relatedEdgeIds]
+  };
+}
+
 /**
  * Parse and validate the `GET /v1/audit/events` query string into an
  * {@link AuditQuery}. Returns `{ error }` on the first invalid parameter so the
@@ -886,6 +995,17 @@ export interface LocalApiOptions {
    * tokens, secrets, or raw request input.
    */
   trustEngine?: CompartmentTrustEngine;
+  /**
+   * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
+   * pipeline (before the trust gate), modelling capabilities as a graph and
+   * evaluating each prospective capability against the compartment's execution
+   * path, its transition rules, and its dependency-isolation policy. When
+   * omitted, a bootstrap engine seeded with the static transition rules and the
+   * `research` isolation policy is created. It performs no network, persistence,
+   * AI/ML, or semantic classification work and never stores tokens, secrets, or
+   * raw request input.
+   */
+  capabilityGraphEngine?: CapabilityGraphEngine;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1107,6 +1227,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const adaptiveDefenseEngine =
     options.adaptiveDefenseEngine ?? buildAdaptiveDefenseEngine();
   const trustEngine = options.trustEngine ?? buildCompartmentTrustEngine();
+  const capabilityGraphEngine =
+    options.capabilityGraphEngine ?? buildCapabilityGraphEngine();
 
   /**
    * Map a recorded {@link SecurityEventType} onto the reputation event it feeds
@@ -1442,6 +1564,131 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // own response below.
     let defenseView: DefenseDecisionView | undefined;
 
+    // ── Capability Graph gate (Sprint 15) — runs FIRST, before the trust gate ──
+    // The graph reasons about the WHOLE execution path (this compartment's prior
+    // capabilities + this prospective one) rather than the isolated request. It
+    // consults only metadata (tool, risk, compartment) and never the raw input.
+    //   - block            → denied outright (no trust, defense, or execution)
+    //   - require_approval → diverted to the human-in-the-loop approval queue
+    //   - force_rotation   → continue, but force a session rotation downstream
+    //   - allow            → continue normally
+    // The executed path only GROWS on a successful execution (recorded below);
+    // a block/approval records minimal nodes/edges without storing raw input.
+    const graphDecision = capabilityGraphEngine.evaluatePath({
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      tool: request.tool as CapabilityTool,
+      riskLevel: request.riskLevel as RiskLevel
+    });
+    // Whether the graph demands a forced session rotation further down.
+    let graphForcesRotation = false;
+    // The graph view surfaced on the response. For block/approval it is replaced
+    // by the recorded decision (with its related node/edge ids); for allow it is
+    // updated after a successful execution records the path node.
+    let capabilityGraphView: CapabilityPathDecisionView =
+      toCapabilityPathDecisionView(graphDecision);
+
+    if (graphDecision.action === 'block') {
+      const recorded = capabilityGraphEngine.recordTransition({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        toTool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel
+      });
+      observeSecurity({
+        type: 'capability_graph_blocked',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability graph blocked the execution path.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          pathRisk: recorded.risk,
+          reason: recorded.reason
+        }
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: recorded.reason,
+        capabilityGraph: toCapabilityPathDecisionView(recorded)
+      };
+      return res.status(200).json(response);
+    }
+
+    if (graphDecision.action === 'require_approval') {
+      const recorded = capabilityGraphEngine.recordTransition({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        toTool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel
+      });
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        reason: recorded.reason
+      });
+      observeSecurity({
+        type: 'capability_graph_approval_required',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: 'Capability graph requires human approval for the path.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          pathRisk: recorded.risk,
+          reason: recorded.reason
+        }
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'pending',
+        reason: recorded.reason,
+        capabilityGraph: toCapabilityPathDecisionView(recorded),
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      };
+      return res.status(200).json(response);
+    }
+
+    if (graphDecision.action === 'force_rotation') {
+      graphForcesRotation = true;
+      observeSecurity({
+        type: 'capability_graph_rotation_required',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability graph forced a session rotation for the path.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          pathRisk: graphDecision.risk,
+          reason: graphDecision.reason
+        }
+      });
+    } else {
+      observeSecurity({
+        type: 'capability_graph_allowed',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Capability graph allowed the execution path.',
+        metadata: {
+          tool: request.tool,
+          riskLevel: request.riskLevel,
+          pathRisk: graphDecision.risk
+        }
+      });
+    }
+
     // ── Compartment Trust gate (Sprint 14) — runs BEFORE the defense pipeline ──
     // The compartment's current trust standing decides whether the request may
     // proceed at all. This snapshot reflects trust as it was when the request
@@ -1457,6 +1704,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Compartment quarantined.',
+        capabilityGraph: capabilityGraphView,
         trust: trustView
       };
       return res.status(200).json(response);
@@ -1491,6 +1739,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: 'Compartment restricted; human approval required.',
+        capabilityGraph: capabilityGraphView,
         trust: trustView,
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
@@ -1537,7 +1786,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         if (retryAfterMs !== undefined) defense.retryAfterMs = retryAfterMs;
         return {
           kind: 'respond',
-          body: { decision: 'denied', reason, defense }
+          body: { decision: 'denied', reason, capabilityGraph: capabilityGraphView, defense }
         };
       }
       if (action === 'require_approval') {
@@ -1570,6 +1819,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           body: {
             decision: 'pending',
             reason,
+            capabilityGraph: capabilityGraphView,
             defense,
             approvalRequestId: created.request.id,
             approvalToken: created.token.value
@@ -1735,7 +1985,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
-        reason: decision.reason
+        reason: decision.reason,
+        capabilityGraph: capabilityGraphView
       };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
@@ -1770,6 +2021,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: decision.reason,
+        capabilityGraph: capabilityGraphView,
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
@@ -1827,7 +2079,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       if (err instanceof TransportPolicyError) {
         const response: ExecuteMockCapabilityHttpResponse = {
           decision: 'denied',
-          reason: `No transport routing rule available: ${err.message}`
+          reason: `No transport routing rule available: ${err.message}`,
+          capabilityGraph: capabilityGraphView
         };
         if (defenseView !== undefined) response.defense = defenseView;
         return res.status(200).json(response);
@@ -1889,6 +2142,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Privacy boundary blocked execution.',
+        capabilityGraph: capabilityGraphView,
         routing: toRoutingDecisionView(routing),
         privacyBoundary: privacyView
       };
@@ -1925,6 +2179,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: privacy.reason,
+        capabilityGraph: capabilityGraphView,
         routing: toRoutingDecisionView(routing),
         privacyBoundary: privacyView,
         approvalRequestId: created.request.id,
@@ -1952,10 +2207,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
     }
 
-    // The session rotates when EITHER the routing decision OR the privacy
-    // boundary decision demands it. The engines themselves never mint a session.
+    // The session rotates when the routing decision, the privacy boundary, OR
+    // the capability graph demands it. The engines themselves never mint a
+    // session.
     const mustRotateSession =
-      routing.shouldRotateSession || privacy.action === 'rotate_session';
+      routing.shouldRotateSession ||
+      privacy.action === 'rotate_session' ||
+      graphForcesRotation;
     const sessionsBefore = sessionManager.size();
     const session = mustRotateSession
       ? sessionManager.rotateSession(request.compartmentId)
@@ -2097,6 +2355,46 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       }
     });
 
+    // ── Capability Graph path recording (Sprint 15) ──
+    // The executed path only grows on a SUCCESSFUL execution. Record the admitted
+    // capability node (advancing the compartment's path) plus an `executed`
+    // execution node, and surface the resulting node/edge ids on the response.
+    // A blocked/failed execution never extends the path.
+    if (result.status === 'success') {
+      try {
+        const capabilityNode = capabilityGraphEngine.recordCapabilityRequest({
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          tool: request.tool as CapabilityTool,
+          riskLevel: request.riskLevel as RiskLevel
+        });
+        const executionNode = capabilityGraphEngine.addNode({
+          id: randomUUID(),
+          kind: 'execution',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          tool: request.tool as CapabilityTool,
+          riskLevel: request.riskLevel as RiskLevel,
+          createdAt: Date.now()
+        });
+        const executedEdge = capabilityGraphEngine.addEdge({
+          id: randomUUID(),
+          fromNodeId: capabilityNode.id,
+          toNodeId: executionNode.id,
+          relation: 'executed',
+          createdAt: Date.now()
+        });
+        capabilityGraphView = {
+          ...capabilityGraphView,
+          relatedNodeIds: [capabilityNode.id, executionNode.id],
+          relatedEdgeIds: [executedEdge.id]
+        };
+      } catch {
+        // Fail-safe: graph bookkeeping is observational and must never break the
+        // primary execute-mock flow.
+      }
+    }
+
     const execution: ExecutionResultView = {
       status: result.status,
       transportKind: result.transportKind
@@ -2111,6 +2409,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const response: ExecuteMockCapabilityHttpResponse = {
       decision: 'allowed',
       reason: decision.reason,
+      capabilityGraph: capabilityGraphView,
       routing: toRoutingDecisionView(routing),
       privacyBoundary: privacyView,
       execution
@@ -2443,6 +2742,99 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   app.all('/v1/trust/profiles/:compartmentId', (_req, res) => {
     res.status(405).json({
       error: 'Method not allowed. Use GET /v1/trust/profiles/:compartmentId.'
+    });
+  });
+
+  // ── Capability Graph read endpoints (Sprint 15) ──
+  // Metadata only: nodes, edges, transition rules, and isolation policies.
+  // Optional `agentId` / `compartmentId` / `tool` query params filter nodes and
+  // edges. Never any token, secret, or raw caller input. A repeated (array)
+  // query param is rejected with 400.
+  const readGraphFilter = (
+    req: express.Request,
+    res: express.Response
+  ): { filter: CapabilityGraphFilter } | undefined => {
+    const filter: CapabilityGraphFilter = {};
+    const readSingle = (key: 'agentId' | 'compartmentId' | 'tool'):
+      | string
+      | undefined
+      | null => {
+      const raw = req.query[key];
+      if (raw === undefined) return undefined;
+      if (typeof raw === 'string') return raw.length > 0 ? raw : undefined;
+      res.status(400).json({ error: `Query "${key}" must be a single value.` });
+      return null;
+    };
+    const agentId = readSingle('agentId');
+    if (agentId === null) return undefined;
+    if (agentId !== undefined) filter.agentId = agentId;
+    const compartmentId = readSingle('compartmentId');
+    if (compartmentId === null) return undefined;
+    if (compartmentId !== undefined) filter.compartmentId = compartmentId;
+    const tool = readSingle('tool');
+    if (tool === null) return undefined;
+    if (tool !== undefined) filter.tool = tool as CapabilityTool;
+    return { filter };
+  };
+
+  app.get('/v1/capability-graph/nodes', (req, res) => {
+    const parsed = readGraphFilter(req, res);
+    if (!parsed) return undefined;
+    const nodes: CapabilityNodeView[] = capabilityGraphEngine
+      .listNodes(parsed.filter)
+      .map(toCapabilityNodeView);
+    const body: CapabilityGraphNodesHttpResponse = { nodes };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/capability-graph/nodes', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/capability-graph/nodes.'
+    });
+  });
+
+  app.get('/v1/capability-graph/edges', (req, res) => {
+    const parsed = readGraphFilter(req, res);
+    if (!parsed) return undefined;
+    const edges: CapabilityEdgeView[] = capabilityGraphEngine
+      .listEdges(parsed.filter)
+      .map(toCapabilityEdgeView);
+    const body: CapabilityGraphEdgesHttpResponse = { edges };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/capability-graph/edges', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/capability-graph/edges.'
+    });
+  });
+
+  app.get('/v1/capability-graph/transition-rules', (_req, res) => {
+    const transitionRules: CapabilityTransitionRuleView[] = capabilityGraphEngine
+      .listTransitionRules()
+      .map(toCapabilityTransitionRuleView);
+    const body: CapabilityGraphTransitionRulesHttpResponse = { transitionRules };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/capability-graph/transition-rules', (_req, res) => {
+    res.status(405).json({
+      error:
+        'Method not allowed. Use GET /v1/capability-graph/transition-rules.'
+    });
+  });
+
+  app.get('/v1/capability-graph/isolation-policies', (_req, res) => {
+    const isolationPolicies: DependencyIsolationPolicyView[] =
+      capabilityGraphEngine
+        .listIsolationPolicies()
+        .map(toDependencyIsolationPolicyView);
+    const body: CapabilityGraphIsolationPoliciesHttpResponse = {
+      isolationPolicies
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/capability-graph/isolation-policies', (_req, res) => {
+    res.status(405).json({
+      error:
+        'Method not allowed. Use GET /v1/capability-graph/isolation-policies.'
     });
   });
 

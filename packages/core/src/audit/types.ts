@@ -62,7 +62,11 @@ export type SecurityEventType =
   | 'trust_score_changed'
   | 'compartment_restricted'
   | 'compartment_quarantined'
-  | 'trust_recovered';
+  | 'trust_recovered'
+  | 'capability_graph_allowed'
+  | 'capability_graph_blocked'
+  | 'capability_graph_approval_required'
+  | 'capability_graph_rotation_required';
 
 /**
  * A single, immutable security event.
