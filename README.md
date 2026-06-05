@@ -82,6 +82,39 @@ denied (`502`). There is no silent fallback to `direct`.
 - no cross-compartment state sharing (cookies, sessions, user-agents, transport)
 - privacy layer, not anonymity guarantee
 
+## CLI Quickstart (Sprint 18)
+
+The GRL CLI provides a local operator interface to inspect and control the GRL runtime without a web UI.
+
+```bash
+# Start the local API server (in one terminal)
+npm run dev:server
+
+# In another terminal — check runtime health
+npm run cli -- health
+
+# Run a search through the GRL pipeline
+npm run cli -- search "bitcoin privacy"
+
+# List trust profiles
+npm run cli -- trust
+
+# Inspect audit events filtered by type
+npm run cli -- audit --type execution_failed
+
+# Reload runtime config from disk
+npm run cli -- runtime reload
+```
+
+JSON output for scripting:
+
+```bash
+npm run cli -- trust --json
+npm run cli -- search "bitcoin privacy" --json
+```
+
+See [`docs/cli.md`](docs/cli.md) for the full command reference, configuration, and error model.
+
 ## Quickstart
 
 ```bash
