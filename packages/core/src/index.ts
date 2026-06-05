@@ -59,6 +59,8 @@ export * from './transport-registry/index.js';
 
 export * from './audit/index.js';
 
+export * from './capability-graph/index.js';
+
 export * from './runtime-security/index.js';
 
 export * from './adaptive-defense/index.js';
