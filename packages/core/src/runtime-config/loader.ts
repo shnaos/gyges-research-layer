@@ -68,23 +68,43 @@ export interface RuntimeConfigLoaderOptions {
  */
 export class RuntimeConfigLoader {
   private readonly now: () => number;
-  private readonly onEvent?: (event: RuntimeConfigEvent) => void;
+  private readonly listeners: Array<(event: RuntimeConfigEvent) => void> = [];
   private snapshot: RuntimeConfigSnapshot | undefined;
   private path: string | undefined;
   private watcher: FSWatcher | undefined;
 
   constructor(options: RuntimeConfigLoaderOptions = {}) {
     this.now = options.now ?? Date.now;
-    this.onEvent = options.onEvent;
+    if (options.onEvent) {
+      this.listeners.push(options.onEvent);
+    }
+  }
+
+  /**
+   * Register an additional lifecycle listener (e.g. the server's audit + engine
+   * rebuild hook). Multiple listeners are supported; each is isolated so a
+   * throwing listener never affects the others or the loader.
+   */
+  addEventListener(listener: (event: RuntimeConfigEvent) => void): void {
+    this.listeners.push(listener);
+  }
+
+  /** Remove a previously registered lifecycle listener. */
+  removeEventListener(listener: (event: RuntimeConfigEvent) => void): void {
+    const index = this.listeners.indexOf(listener);
+    if (index >= 0) {
+      this.listeners.splice(index, 1);
+    }
   }
 
   /** Emit a lifecycle event; a throwing listener never breaks the loader. */
   private emit(event: RuntimeConfigEvent): void {
-    if (!this.onEvent) return;
-    try {
-      this.onEvent(event);
-    } catch {
-      // Lifecycle observation must never break config loading.
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // Lifecycle observation must never break config loading.
+      }
     }
   }
 

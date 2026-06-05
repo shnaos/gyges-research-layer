@@ -511,7 +511,11 @@ export type SecurityEventTypeView =
   | 'capability_graph_allowed'
   | 'capability_graph_blocked'
   | 'capability_graph_approval_required'
-  | 'capability_graph_rotation_required';
+  | 'capability_graph_rotation_required'
+  | 'config_loaded'
+  | 'config_reloaded'
+  | 'config_reload_failed'
+  | 'config_validation_failed';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -786,4 +790,42 @@ export interface CapabilityGraphTransitionRulesHttpResponse {
 /** Response body for `GET /v1/capability-graph/isolation-policies`. */
 export interface CapabilityGraphIsolationPoliciesHttpResponse {
   isolationPolicies: DependencyIsolationPolicyView[];
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 16 — Runtime configuration read/reload surface.
+//
+// These responses expose only secret-free policy metadata derived from the
+// active RuntimeConfigSnapshot. They NEVER carry a token, secret, credential,
+// or raw request input — a RuntimeConfig is pure policy data.
+// ---------------------------------------------------------------------------
+
+/**
+ * Response body for `GET /v1/runtime/config`.
+ *
+ * `config` is the full active {@link import('../../../packages/core/src/index.js').RuntimeConfig}
+ * — deterministic policy metadata only.
+ */
+export interface RuntimeConfigHttpResponse {
+  version: number;
+  loadedAt: number;
+  checksum: string;
+  config: import('../../../packages/core/src/index.js').RuntimeConfig;
+}
+
+/** Response body for `GET /v1/runtime/config/checksum`. */
+export interface RuntimeConfigChecksumHttpResponse {
+  checksum: string;
+}
+
+/** Response body for `GET /v1/runtime/config/version`. */
+export interface RuntimeConfigVersionHttpResponse {
+  version: number;
+}
+
+/** Response body for `POST /v1/runtime/reload` — new snapshot metadata only. */
+export interface RuntimeReloadHttpResponse {
+  version: number;
+  loadedAt: number;
+  checksum: string;
 }

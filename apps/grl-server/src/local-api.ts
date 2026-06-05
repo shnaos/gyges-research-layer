@@ -59,6 +59,15 @@ import {
   TransportPolicyError,
   TransportPolicyRule,
   escalateRisk,
+  CapabilityPolicy,
+  RuntimeCompartment,
+  RuntimeConfig,
+  RuntimeConfigSnapshot,
+  RuntimeConfigLoader,
+  RuntimeConfigEvent,
+  RuntimeConfigValidationError,
+  createSnapshot,
+  DEFAULT_RUNTIME_CONFIG,
   BOOTSTRAP_ADAPTIVE_DEFENSE_POLICIES,
   BOOTSTRAP_CAPABILITY_TRANSITION_RULES,
   BOOTSTRAP_DEPENDENCY_ISOLATION_POLICY,
@@ -111,6 +120,10 @@ import {
   ReputationProfileView,
   RequestCapabilityHttpResponse,
   RoutingDecisionView,
+  RuntimeConfigHttpResponse,
+  RuntimeConfigChecksumHttpResponse,
+  RuntimeConfigVersionHttpResponse,
+  RuntimeReloadHttpResponse,
   RuntimeAnomaliesHttpResponse,
   RuntimeAnomalyView,
   RuntimeIncidentHttpResponse,
@@ -387,6 +400,109 @@ export function buildCapabilityGraphEngine(): CapabilityGraphEngine {
   return engine;
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 16 — config-driven engine builders.
+//
+// These rebuild the deterministic policy engines from a {@link RuntimeConfig}
+// slice instead of the hard-coded bootstrap constants. The server uses them so
+// the firewall / routing / privacy / rate-limiting / adaptive-defense / graph
+// engines are derived from the active {@link RuntimeConfigSnapshot}. They remain
+// purely in-memory and perform no network, persistence, AI/ML, or browser work.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a Capability Firewall from declarative {@link CapabilityPolicy} entries.
+ *
+ * Each policy expands to one deny-by-default `allow` rule per tool at its
+ * `maxRiskLevel`. A policy that declares `requiresConfirmationAbove` flags its
+ * rules as requiring human confirmation (routing matching requests into the
+ * approval queue). The expansion is order-preserving and reproduces the legacy
+ * bootstrap firewall exactly. No transport is opened — `transport` is metadata.
+ */
+export function buildFirewallFromConfig(
+  policies: readonly CapabilityPolicy[]
+): CapabilityFirewall {
+  const rules: PolicyRule[] = [];
+  for (const policy of policies) {
+    const requiresConfirmation = policy.requiresConfirmationAbove !== undefined;
+    for (const tool of policy.allowedTools) {
+      rules.push({
+        effect: 'allow',
+        agentId: policy.agentId,
+        compartment: policy.compartmentId,
+        tool,
+        maxRiskLevel: policy.maxRiskLevel,
+        transport: 'direct',
+        requiresConfirmation
+      });
+    }
+  }
+  const document: PolicyDocument = { defaultDeny: true, rules };
+  return new CapabilityFirewall(new YamlPolicyEngine(document));
+}
+
+/** Build a Transport Policy Engine from config transport-policy rules. */
+export function buildTransportPolicyEngineFromConfig(
+  rules: readonly TransportPolicyRule[]
+): TransportPolicyEngine {
+  const engine = new TransportPolicyEngine();
+  for (const rule of rules) {
+    engine.registerRule(rule);
+  }
+  return engine;
+}
+
+/** Build a Privacy Boundary Engine from config privacy-boundary rules. */
+export function buildPrivacyBoundaryEngineFromConfig(
+  rules: readonly PrivacyBoundaryRule[]
+): PrivacyBoundaryEngine {
+  const engine = new PrivacyBoundaryEngine();
+  for (const rule of rules) {
+    engine.registerRule(rule);
+  }
+  return engine;
+}
+
+/** Build a Capability Rate Limiter from config rate-limit policies. */
+export function buildRateLimiterFromConfig(
+  policies: readonly RateLimitPolicy[]
+): CapabilityRateLimiter {
+  const limiter = new CapabilityRateLimiter();
+  for (const policy of policies) {
+    limiter.registerPolicy(policy);
+  }
+  return limiter;
+}
+
+/** Build an Adaptive Defense Engine from config adaptive-defense policies. */
+export function buildAdaptiveDefenseEngineFromConfig(
+  policies: readonly AdaptiveDefensePolicy[]
+): AdaptiveDefenseEngine {
+  const engine = new AdaptiveDefenseEngine();
+  for (const policy of policies) {
+    engine.registerPolicy(policy);
+  }
+  return engine;
+}
+
+/**
+ * Build a Capability Graph Engine from config graph transition rules and
+ * dependency-isolation policies.
+ */
+export function buildCapabilityGraphEngineFromConfig(
+  config: RuntimeConfig
+): CapabilityGraphEngine {
+  const engine = new CapabilityGraphEngine();
+  for (const rule of config.graphTransitionRules) {
+    engine.registerTransitionRule(rule);
+  }
+  for (const policy of config.isolationPolicies) {
+    engine.registerIsolationPolicy(policy);
+  }
+  return engine;
+}
+
+
 /**
  * The subset of {@link SecurityEventType}s emitted by the trust layer itself.
  * Kept as a single shared type so the severity table and the emit helper stay
@@ -429,7 +545,11 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'capability_graph_allowed',
   'capability_graph_blocked',
   'capability_graph_approval_required',
-  'capability_graph_rotation_required'
+  'capability_graph_rotation_required',
+  'config_loaded',
+  'config_reloaded',
+  'config_reload_failed',
+  'config_validation_failed'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -1006,6 +1126,16 @@ export interface LocalApiOptions {
    * raw request input.
    */
   capabilityGraphEngine?: CapabilityGraphEngine;
+  /**
+   * Runtime Config Loader (Sprint 16). When provided AND it already holds a
+   * snapshot, the firewall, routing, privacy, rate-limiting, adaptive-defense,
+   * and capability-graph engines are derived from that snapshot's config instead
+   * of the in-memory {@link DEFAULT_RUNTIME_CONFIG} fallback. It also backs the
+   * `GET /v1/runtime/config*` read endpoints and `POST /v1/runtime/reload`. It
+   * is local-only and never performs network, cloud, or durable-persistence
+   * work beyond reading the user's own local JSON file.
+   */
+  runtimeConfigLoader?: RuntimeConfigLoader;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1199,7 +1329,6 @@ function handleApprovalDecision(
  * endpoints drive a purely in-memory human-in-the-loop queue.
  */
 export function createLocalApiApp(options: LocalApiOptions): express.Express {
-  const { firewall } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const approvalQueue = options.approvalQueue ?? buildApprovalQueue();
   const transportRegistry =
@@ -1213,22 +1342,124 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       maxRequests: DEFAULT_SESSION_MAX_REQUESTS,
       reusePolicy: DEFAULT_SESSION_REUSE_POLICY
     });
-  const transportPolicyEngine =
-    options.transportPolicyEngine ?? buildBootstrapTransportPolicyEngine();
-  const privacyBoundaryEngine =
-    options.privacyBoundaryEngine ?? buildBootstrapPrivacyBoundaryEngine();
   const securityEventEngine =
     options.securityEventEngine ?? buildSecurityEventEngine();
   const heuristicsEngine =
     options.heuristicsEngine ?? buildRuntimeSecurityHeuristicsEngine();
   const incidentDetector =
     options.incidentDetector ?? buildIncidentDetector();
-  const rateLimiter = options.rateLimiter ?? buildCapabilityRateLimiter();
-  const adaptiveDefenseEngine =
-    options.adaptiveDefenseEngine ?? buildAdaptiveDefenseEngine();
   const trustEngine = options.trustEngine ?? buildCompartmentTrustEngine();
-  const capabilityGraphEngine =
-    options.capabilityGraphEngine ?? buildCapabilityGraphEngine();
+
+  // Sprint 16 — the active runtime config. When a loader holding a snapshot is
+  // supplied, the policy engines are derived from that snapshot's config;
+  // otherwise the in-memory DEFAULT_RUNTIME_CONFIG fallback is used. The
+  // fallback mirrors the legacy bootstrap constants exactly.
+  const runtimeConfigLoader = options.runtimeConfigLoader;
+  let activeSnapshot: RuntimeConfigSnapshot =
+    runtimeConfigLoader?.getSnapshot() ??
+    createSnapshot(DEFAULT_RUNTIME_CONFIG, Date.now());
+
+  // The config-derived policy engines are rebuildable on reload. An explicitly
+  // injected engine always wins on initial construction (test injection); a
+  // reload rebuilds them from the freshly loaded config.
+  let firewall = options.firewall;
+  let transportPolicyEngine =
+    options.transportPolicyEngine ??
+    buildTransportPolicyEngineFromConfig(activeSnapshot.config.transportPolicies);
+  let privacyBoundaryEngine =
+    options.privacyBoundaryEngine ??
+    buildPrivacyBoundaryEngineFromConfig(
+      activeSnapshot.config.privacyBoundaryRules
+    );
+  let rateLimiter =
+    options.rateLimiter ??
+    buildRateLimiterFromConfig(activeSnapshot.config.rateLimitPolicies);
+  let adaptiveDefenseEngine =
+    options.adaptiveDefenseEngine ??
+    buildAdaptiveDefenseEngineFromConfig(
+      activeSnapshot.config.adaptiveDefensePolicies
+    );
+  let capabilityGraphEngine =
+    options.capabilityGraphEngine ??
+    buildCapabilityGraphEngineFromConfig(activeSnapshot.config);
+
+  /**
+   * Rebuild the config-derived policy engines from a freshly reloaded snapshot.
+   * Stateful components (sessions, approvals, audit, trust) are intentionally
+   * preserved across a reload — only the deterministic policy surfaces change.
+   */
+  const applyReloadedSnapshot = (snapshot: RuntimeConfigSnapshot): void => {
+    activeSnapshot = snapshot;
+    firewall = buildFirewallFromConfig(snapshot.config.firewallPolicies);
+    transportPolicyEngine = buildTransportPolicyEngineFromConfig(
+      snapshot.config.transportPolicies
+    );
+    privacyBoundaryEngine = buildPrivacyBoundaryEngineFromConfig(
+      snapshot.config.privacyBoundaryRules
+    );
+    rateLimiter = buildRateLimiterFromConfig(snapshot.config.rateLimitPolicies);
+    adaptiveDefenseEngine = buildAdaptiveDefenseEngineFromConfig(
+      snapshot.config.adaptiveDefensePolicies
+    );
+    capabilityGraphEngine = buildCapabilityGraphEngineFromConfig(snapshot.config);
+  };
+
+  /**
+   * Severity of each runtime-config audit event. A failed (re)load is a warning;
+   * a successful (re)load is informational.
+   */
+  const CONFIG_AUDIT_SEVERITY: Record<
+    'config_loaded' | 'config_reloaded' | 'config_reload_failed' | 'config_validation_failed',
+    EventSeverity
+  > = {
+    config_loaded: 'info',
+    config_reloaded: 'info',
+    config_reload_failed: 'warning',
+    config_validation_failed: 'warning'
+  };
+
+  /**
+   * Emit a runtime-config audit event straight to the audit store (NOT through
+   * {@link observeSecurity}). Config events must never feed the heuristics
+   * engine, which would risk a config → audit → config loop. Metadata is minimal
+   * and secret-free (version, checksum, failure reason) — NEVER the file's raw
+   * contents.
+   */
+  const emitConfigAudit = (event: RuntimeConfigEvent): void => {
+    const metadata: Record<string, unknown> = {};
+    if (event.version !== undefined) metadata.version = event.version;
+    if (event.checksum !== undefined) metadata.checksum = event.checksum;
+    if (event.reason !== undefined) metadata.reason = event.reason;
+    securityEventEngine.emit({
+      type: event.type,
+      severity: CONFIG_AUDIT_SEVERITY[event.type],
+      message: event.message,
+      metadata
+    });
+  };
+
+  // Wire the loader's lifecycle events into the audit trail and rebuild the
+  // config-derived engines on every successful (re)load — including watch-driven
+  // hot reloads. A failed reload keeps the previous snapshot/engines active.
+  if (runtimeConfigLoader) {
+    runtimeConfigLoader.addEventListener((event) => {
+      emitConfigAudit(event);
+      if (event.type === 'config_reloaded') {
+        const next = runtimeConfigLoader.getSnapshot();
+        if (next) applyReloadedSnapshot(next);
+      }
+    });
+  }
+
+  // Audit the initial config load (file-backed or DEFAULT fallback). The loader
+  // already emitted its own `config_loaded` before this app (and listener)
+  // existed, so the initial audit is emitted here exactly once.
+  emitConfigAudit({
+    type: 'config_loaded',
+    version: activeSnapshot.version,
+    checksum: activeSnapshot.checksum,
+    message: 'Runtime config loaded.'
+  });
 
   /**
    * Map a recorded {@link SecurityEventType} onto the reputation event it feeds
@@ -2838,6 +3069,85 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   });
 
+  // Read-only metadata surface (Sprint 16): expose the active runtime config and
+  // its derived metadata. The body carries only deterministic policy data —
+  // NEVER a token, secret, credential, or raw request input.
+  app.get('/v1/runtime/config', (_req, res) => {
+    const body: RuntimeConfigHttpResponse = {
+      version: activeSnapshot.version,
+      loadedAt: activeSnapshot.loadedAt,
+      checksum: activeSnapshot.checksum,
+      config: activeSnapshot.config
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/config', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use GET /v1/runtime/config.' });
+  });
+
+  app.get('/v1/runtime/config/checksum', (_req, res) => {
+    const body: RuntimeConfigChecksumHttpResponse = {
+      checksum: activeSnapshot.checksum
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/config/checksum', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/runtime/config/checksum.'
+    });
+  });
+
+  app.get('/v1/runtime/config/version', (_req, res) => {
+    const body: RuntimeConfigVersionHttpResponse = {
+      version: activeSnapshot.version
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/config/version', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/runtime/config/version.'
+    });
+  });
+
+  // Local-only reload: re-read the current config file, replace the active
+  // snapshot, rebuild the derived policy engines, and return the new snapshot
+  // metadata. Fail-safe: an invalid/missing file keeps the previous snapshot.
+  //   - 200 OK            — reloaded
+  //   - 400 invalid config
+  //   - 404 missing config (no file loaded, or file no longer readable)
+  app.post('/v1/runtime/reload', (_req, res) => {
+    if (!runtimeConfigLoader || runtimeConfigLoader.getPath() === undefined) {
+      return res
+        .status(404)
+        .json({ error: 'No runtime config file is loaded to reload.' });
+    }
+    try {
+      const snapshot = runtimeConfigLoader.reload();
+      const body: RuntimeReloadHttpResponse = {
+        version: snapshot.version,
+        loadedAt: snapshot.loadedAt,
+        checksum: snapshot.checksum
+      };
+      return res.status(200).json(body);
+    } catch (error) {
+      if (error instanceof RuntimeConfigValidationError) {
+        return res
+          .status(400)
+          .json({ error: `Invalid runtime config: ${error.reason}.` });
+      }
+      return res
+        .status(404)
+        .json({ error: 'Runtime config file could not be read.' });
+    }
+  });
+  app.all('/v1/runtime/reload', (_req, res) => {
+    res
+      .status(405)
+      .json({ error: 'Method not allowed. Use POST /v1/runtime/reload.' });
+  });
+
   app.get('/v1/approvals/pending', (_req, res) => {
     const pending: PendingApprovalView[] = approvalQueue
       .listPending()
@@ -2962,8 +3272,34 @@ export function resolveServerConfig(
 function startLocalApiServer(): void {
   const config = resolveServerConfig();
   const transportRegistry = buildBootstrapTransportRegistry();
+
+  // Sprint 16 — load the runtime config from GRL_CONFIG_PATH when present; fall
+  // back to the in-memory DEFAULT_RUNTIME_CONFIG bootstrap otherwise. The loader
+  // is local-only (filesystem + JSON) and performs no network work.
+  const runtimeConfigLoader = new RuntimeConfigLoader();
+  const configPath = process.env.GRL_CONFIG_PATH;
+  let activeConfig: RuntimeConfig = DEFAULT_RUNTIME_CONFIG;
+  if (configPath && configPath.length > 0) {
+    try {
+      const snapshot = runtimeConfigLoader.loadFromFile(configPath);
+      activeConfig = snapshot.config;
+      if (process.env.GRL_CONFIG_WATCH === '1') {
+        runtimeConfigLoader.watch();
+      }
+    } catch (error) {
+      // Fail-closed: refuse to start on an explicitly-requested but invalid
+      // config rather than silently falling back to defaults.
+      // eslint-disable-next-line no-console
+      console.error(
+        `Failed to load GRL_CONFIG_PATH=${configPath}: ${(error as Error).message}`
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   const app = createLocalApiApp({
-    firewall: buildBootstrapFirewall(),
+    firewall: buildFirewallFromConfig(activeConfig.firewallPolicies),
     maxBodyBytes: config.maxBodyBytes,
     approvalQueue: buildApprovalQueue(config.approvalTtlMs),
     executionEngine: buildMockExecutionEngine(transportRegistry),
@@ -2972,9 +3308,8 @@ function startLocalApiServer(): void {
       maxRequests: config.sessionMaxRequests,
       reusePolicy: config.sessionReusePolicy
     }),
-    transportPolicyEngine: buildBootstrapTransportPolicyEngine(),
-    privacyBoundaryEngine: buildBootstrapPrivacyBoundaryEngine(),
-    transportRegistry
+    transportRegistry,
+    runtimeConfigLoader
   });
   app.listen(config.port, config.host, () => {
     // eslint-disable-next-line no-console
