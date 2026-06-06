@@ -202,3 +202,50 @@ export interface TransportInfo {
   processSpawnAccess: boolean;
   envAccess: boolean;
 }
+
+
+// ---------------------------------------------------------------------------
+// Multi-Agent Runtime (Sprint 23)
+// ---------------------------------------------------------------------------
+
+export interface AgentQuotaInfo {
+  maxConcurrentExecutions: number;
+  maxSessions: number;
+  maxApprovalsPending: number;
+  maxAuditEvents: number;
+  maxIncidents: number;
+}
+
+export interface AgentLeaseInfo {
+  id: string;
+  acquiredAt: number;
+  expiresAt: number;
+  renewable: boolean;
+  holderAgentId: string;
+}
+
+export interface AgentRuntimeInfo {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  status: 'active' | 'idle' | 'restricted' | 'quarantined' | 'evicted';
+  compartments: string[];
+  trustScore: number;
+  activeSessions: number;
+  activeExecutions: number;
+  quota: AgentQuotaInfo;
+  lease?: AgentLeaseInfo;
+}
+
+export interface AgentTrustInfo {
+  agentId: string;
+  trustScore: number;
+  status: string;
+}
+
+export interface AgentActionResult {
+  agentId: string;
+  status: string;
+  updatedAt: number;
+  raw: unknown;
+}

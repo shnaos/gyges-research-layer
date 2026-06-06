@@ -74,7 +74,14 @@ export type SecurityEventType =
   | 'runtime_profile_loaded'
   | 'runtime_profile_switched'
   | 'runtime_profile_switch_failed'
-  | 'policy_pack_applied';
+  | 'policy_pack_applied'
+  | 'agent_registered'
+  | 'agent_restricted'
+  | 'agent_quarantined'
+  | 'agent_evicted'
+  | 'agent_quota_exceeded'
+  | 'agent_lease_acquired'
+  | 'agent_lease_expired';
 
 /**
  * A single, immutable security event.

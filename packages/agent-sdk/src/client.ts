@@ -15,6 +15,10 @@
 import { GrlAgentSdkError } from './errors.js';
 import { isAllowed, isDenied, isPending } from './search.js';
 import type {
+  AgentActionResult,
+  AgentLeaseInfo,
+  AgentRuntimeInfo,
+  AgentTrustInfo,
   ApprovalResult,
   AuditEvent,
   AuditFilters,
@@ -102,6 +106,29 @@ interface WireTransportsResponse {
 interface WireHealthResponse {
   status: 'ok';
   service: string;
+}
+
+interface WireAgentsResponse {
+  agents: AgentRuntimeInfo[];
+}
+
+interface WireAgentResponse {
+  agent: AgentRuntimeInfo;
+}
+
+interface WireAgentLeasesResponse {
+  agentId: string;
+  leases: AgentLeaseInfo[];
+}
+
+interface WireAgentTrustResponse {
+  trust: AgentTrustInfo;
+}
+
+interface WireAgentActionResponse {
+  agentId: string;
+  status: string;
+  updatedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,5 +490,77 @@ export class GrlAgentClient {
   async listTransports(): Promise<TransportInfo[]> {
     const wire = await this.request<WireTransportsResponse>('GET', '/v1/transports');
     return wire.transports;
+  }
+
+  // -------------------------------------------------------------------------
+  // Multi-Agent Runtime (Sprint 23)
+  // -------------------------------------------------------------------------
+
+  /** List all registered agent runtimes. */
+  async listAgents(): Promise<AgentRuntimeInfo[]> {
+    const wire = await this.request<WireAgentsResponse>('GET', '/v1/agents');
+    return wire.agents;
+  }
+
+  /** Get the runtime state for a specific agent. */
+  async getAgent(agentId: string): Promise<AgentRuntimeInfo> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    const wire = await this.request<WireAgentResponse>('GET', `/v1/agents/${encoded}`);
+    return wire.agent;
+  }
+
+  /** List active leases for a specific agent. */
+  async listAgentLeases(agentId: string): Promise<AgentLeaseInfo[]> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    const wire = await this.request<WireAgentLeasesResponse>(
+      'GET',
+      `/v1/agents/${encoded}/leases`
+    );
+    return wire.leases;
+  }
+
+  /** Get the trust summary for a specific agent. */
+  async getAgentTrust(agentId: string): Promise<AgentTrustInfo> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    const wire = await this.request<WireAgentTrustResponse>(
+      'GET',
+      `/v1/agents/${encoded}/trust`
+    );
+    return wire.trust;
+  }
+
+  /** Restrict an agent — blocks further execution. */
+  async restrictAgent(agentId: string): Promise<AgentActionResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    const wire = await this.request<WireAgentActionResponse>(
+      'POST',
+      `/v1/agents/${encoded}/restrict`
+    );
+    return { agentId: wire.agentId, status: wire.status, updatedAt: wire.updatedAt, raw: wire };
+  }
+
+  /** Evict an agent — permanently removes it from execution. */
+  async evictAgent(agentId: string): Promise<AgentActionResult> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    const wire = await this.request<WireAgentActionResponse>(
+      'POST',
+      `/v1/agents/${encoded}/evict`
+    );
+    return { agentId: wire.agentId, status: wire.status, updatedAt: wire.updatedAt, raw: wire };
   }
 }

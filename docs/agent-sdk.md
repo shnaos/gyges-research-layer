@@ -300,3 +300,9 @@ See [`examples/agent-sdk/`](../examples/agent-sdk/) for runnable examples:
 | `GET` | `/v1/runtime/profiles` | `listRuntimeProfiles()` |
 | `POST` | `/v1/runtime/profile/:name` | `switchRuntimeProfile()` |
 | `GET` | `/v1/transports` | `listTransports()` |
+| `GET` | `/v1/agents` | `listAgents()` |
+| `GET` | `/v1/agents/:agentId` | `getAgent()` |
+| `GET` | `/v1/agents/:agentId/leases` | `listAgentLeases()` |
+| `GET` | `/v1/agents/:agentId/trust` | `getAgentTrust()` |
+| `POST` | `/v1/agents/:agentId/restrict` | `restrictAgent()` |
+| `POST` | `/v1/agents/:agentId/evict` | `evictAgent()` |

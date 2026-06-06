@@ -111,6 +111,62 @@ export interface RuntimeProfileSwitchResponse {
   switchedAt: number;
 }
 
+export interface AgentQuotaView {
+  maxConcurrentExecutions: number;
+  maxSessions: number;
+  maxApprovalsPending: number;
+  maxAuditEvents: number;
+  maxIncidents: number;
+}
+
+export interface AgentLeaseView {
+  id: string;
+  acquiredAt: number;
+  expiresAt: number;
+  renewable: boolean;
+  holderAgentId: string;
+}
+
+export interface AgentRuntimeView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  status: 'active' | 'idle' | 'restricted' | 'quarantined' | 'evicted';
+  compartments: string[];
+  trustScore: number;
+  activeSessions: number;
+  activeExecutions: number;
+  quota: AgentQuotaView;
+  lease?: AgentLeaseView;
+}
+
+export interface AgentsResponse {
+  agents: AgentRuntimeView[];
+}
+
+export interface AgentResponse {
+  agent: AgentRuntimeView;
+}
+
+export interface AgentLeasesResponse {
+  agentId: string;
+  leases: AgentLeaseView[];
+}
+
+export interface AgentTrustResponse {
+  trust: {
+    agentId: string;
+    trustScore: number;
+    status: string;
+  };
+}
+
+export interface AgentActionResponse {
+  agentId: string;
+  status: string;
+  updatedAt: number;
+}
+
 export interface TransportManifest {
   kind: string;
   name: string;
@@ -282,5 +338,34 @@ export class GrlApiClient {
   async switchProfile(name: string): Promise<RuntimeProfileSwitchResponse> {
     const encoded = encodeURIComponent(name);
     return this.request<RuntimeProfileSwitchResponse>('POST', `/v1/runtime/profile/${encoded}`);
+  }
+
+  async listAgents(): Promise<AgentsResponse> {
+    return this.request<AgentsResponse>('GET', '/v1/agents');
+  }
+
+  async getAgent(agentId: string): Promise<AgentResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<AgentResponse>('GET', `/v1/agents/${encoded}`);
+  }
+
+  async listAgentLeases(agentId: string): Promise<AgentLeasesResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<AgentLeasesResponse>('GET', `/v1/agents/${encoded}/leases`);
+  }
+
+  async getAgentTrust(agentId: string): Promise<AgentTrustResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<AgentTrustResponse>('GET', `/v1/agents/${encoded}/trust`);
+  }
+
+  async restrictAgent(agentId: string): Promise<AgentActionResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<AgentActionResponse>('POST', `/v1/agents/${encoded}/restrict`);
+  }
+
+  async evictAgent(agentId: string): Promise<AgentActionResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<AgentActionResponse>('POST', `/v1/agents/${encoded}/evict`);
   }
 }

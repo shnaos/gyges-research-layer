@@ -18,6 +18,7 @@ import { runTrust } from './commands/trust.js';
 import { runIncidents } from './commands/incidents.js';
 import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks } from './commands/runtime.js';
 import { runTransports } from './commands/transports.js';
+import { runAgentsList, runAgentGet, runAgentLeases, runAgentEvict, runAgentRestrict } from './commands/agents.js';
 
 const program = new Command();
 
@@ -158,6 +159,63 @@ program
   .action(async () => {
     await runCommand(async (client, cfg) => {
       await runTransports(client, cfg);
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// grl agents [subcommand]
+// ---------------------------------------------------------------------------
+const agentsCmd = program
+  .command('agents')
+  .description('Multi-agent runtime management commands');
+
+// grl agents — list all agents
+agentsCmd
+  .command('list', { isDefault: true })
+  .description('List all registered agent runtimes')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runAgentsList(client, cfg);
+    });
+  });
+
+// grl agents <agentId> — show single agent
+agentsCmd
+  .command('get <agentId>')
+  .description('Show the runtime state for a single agent')
+  .action(async (agentId: string) => {
+    await runCommand(async (client, cfg) => {
+      await runAgentGet(agentId, client, cfg);
+    });
+  });
+
+// grl agents leases [agentId] — list leases
+agentsCmd
+  .command('leases [agentId]')
+  .description('List active runtime leases (optionally filtered to one agent)')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runAgentLeases(agentId, client, cfg);
+    });
+  });
+
+// grl agents evict <agentId> — evict an agent
+agentsCmd
+  .command('evict <agentId>')
+  .description('Evict an agent from the runtime')
+  .action(async (agentId: string) => {
+    await runCommand(async (client, cfg) => {
+      await runAgentEvict(agentId, client, cfg);
+    });
+  });
+
+// grl agents restrict <agentId> — restrict an agent
+agentsCmd
+  .command('restrict <agentId>')
+  .description('Restrict an agent (block further execution)')
+  .action(async (agentId: string) => {
+    await runCommand(async (client, cfg) => {
+      await runAgentRestrict(agentId, client, cfg);
     });
   });
 
