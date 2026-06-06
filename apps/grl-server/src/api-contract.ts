@@ -189,6 +189,12 @@ export interface ExecuteMockCapabilityHttpResponse {
   approvalRequestId?: string;
   approvalToken?: string;
   temporalObfuscation?: TemporalObfuscationView;
+  fingerprint?: {
+    activeFingerprintId: string;
+    rotationCount: number;
+    correlationRisk: string;
+    rotated: boolean;
+  };
 }
 
 /** Trust level band a compartment falls into (Sprint 14). */
@@ -560,7 +566,12 @@ export type SecurityEventTypeView =
   | 'burst_detected'
   | 'temporal_budget_exhausted'
   | 'temporal_scheduling_escalated'
-  | 'cadence_smoothing_applied';
+  | 'cadence_smoothing_applied'
+  | 'fingerprint_assigned'
+  | 'fingerprint_rotated'
+  | 'header_isolation_applied'
+  | 'language_isolation_applied'
+  | 'user_agent_rotated';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -1226,5 +1237,59 @@ export interface TemporalPoliciesHttpResponse {
     maxRequestsPerWindow: number;
     windowMs: number;
     forceDelayOnExhaustion: boolean;
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Sprint 27 — Transport Fingerprint API contracts
+// ---------------------------------------------------------------------------
+
+/** Public, secret-free view of a fingerprint profile. */
+export interface FingerprintProfileView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  activeFingerprintId: string;
+  rotationCount: number;
+  requestCount: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+  assignedUserAgent: string;
+  assignedLanguage: string;
+}
+
+/** Response body for `GET /v1/privacy/fingerprints`. */
+export interface FingerprintProfilesHttpResponse {
+  profiles: FingerprintProfileView[];
+}
+
+/** Response body for `GET /v1/privacy/fingerprints/:agentId`. */
+export interface FingerprintProfileHttpResponse {
+  agentId: string;
+  profile: FingerprintProfileView;
+}
+
+/** Public view of a header profile. */
+export interface HeaderProfileView {
+  id: string;
+  userAgent: string;
+  acceptLanguage: string;
+  createdAt: number;
+  active: boolean;
+}
+
+/** Response body for `GET /v1/privacy/header-profiles`. */
+export interface HeaderProfilesHttpResponse {
+  profiles: HeaderProfileView[];
+}
+
+/** Response body for `GET /v1/privacy/header-policies`. */
+export interface HeaderPoliciesHttpResponse {
+  policy: {
+    enabled: boolean;
+    rotateOnPersonaChange: boolean;
+    rotateOnTemporalEscalation: boolean;
+    maxRequestsPerFingerprint: number;
+    strictSensitiveCategoryIsolation: boolean;
   };
 }

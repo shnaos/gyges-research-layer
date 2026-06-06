@@ -281,3 +281,11 @@ See `examples/temporal-obfuscation/`:
 - Cooldown and budget windows are local — restarting the process resets them
 
 GRL is privacy-first infrastructure that reduces surface area. It is not a guarantee.
+
+---
+
+## Sprint 27 extension: Header Isolation after Temporal Escalation
+
+Transport fingerprint rotation can run after temporal signals indicate elevated correlation risk. Temporal scheduling reduces timing signatures; transport fingerprint isolation reduces trivially stable header signatures. They are complementary, deterministic layers.
+
+See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.

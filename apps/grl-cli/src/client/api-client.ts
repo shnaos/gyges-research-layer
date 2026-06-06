@@ -277,6 +277,37 @@ export interface TemporalBudgetResponse {
   budget: TemporalBudgetView;
 }
 
+export interface FingerprintProfileView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  activeFingerprintId: string;
+  rotationCount: number;
+  requestCount: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+  assignedUserAgent: string;
+  assignedLanguage: string;
+}
+
+export interface FingerprintProfilesResponse {
+  profiles: FingerprintProfileView[];
+}
+
+export interface FingerprintProfileResponse {
+  agentId: string;
+  profile: FingerprintProfileView;
+}
+
+export interface HeaderPoliciesResponse {
+  policy: {
+    enabled: boolean;
+    rotateOnPersonaChange: boolean;
+    rotateOnTemporalEscalation: boolean;
+    maxRequestsPerFingerprint: number;
+    strictSensitiveCategoryIsolation: boolean;
+  };
+}
+
 export interface TransportManifest {
   kind: string;
   name: string;
@@ -543,5 +574,18 @@ export class GrlApiClient {
       'GET',
       `/v1/privacy/temporal/budgets/${encoded}`
     );
+  }
+
+  async listFingerprintProfiles(): Promise<FingerprintProfilesResponse> {
+    return this.request<FingerprintProfilesResponse>('GET', '/v1/privacy/fingerprints');
+  }
+
+  async getFingerprintProfile(agentId: string): Promise<FingerprintProfileResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<FingerprintProfileResponse>('GET', `/v1/privacy/fingerprints/${encoded}`);
+  }
+
+  async getHeaderPolicies(): Promise<HeaderPoliciesResponse> {
+    return this.request<HeaderPoliciesResponse>('GET', '/v1/privacy/header-policies');
   }
 }

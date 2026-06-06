@@ -26,7 +26,9 @@ import {
   runPrivacyPersonas,
   runPrivacyBindings,
   runPrivacyTemporal,
-  runPrivacyBudgets
+  runPrivacyBudgets,
+  runPrivacyFingerprints,
+  runPrivacyHeaderPolicies
 } from './commands/privacy.js';
 
 const program = new Command();
@@ -238,6 +240,24 @@ privacyCmd
   .action(async (agentId?: string) => {
     await runCommand(async (client, cfg) => {
       await runPrivacyBudgets(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('fingerprints [agentId]')
+  .description('List fingerprint profiles (optionally for one agent)')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyFingerprints(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('header-policies')
+  .description('Show transport header isolation policies')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyHeaderPolicies(client, cfg);
     });
   });
 

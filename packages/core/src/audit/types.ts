@@ -96,7 +96,12 @@ export type SecurityEventType =
   | 'burst_detected'
   | 'temporal_budget_exhausted'
   | 'temporal_scheduling_escalated'
-  | 'cadence_smoothing_applied';
+  | 'cadence_smoothing_applied'
+  | 'fingerprint_assigned'
+  | 'fingerprint_rotated'
+  | 'header_isolation_applied'
+  | 'language_isolation_applied'
+  | 'user_agent_rotated';
 
 /**
  * A single, immutable security event.

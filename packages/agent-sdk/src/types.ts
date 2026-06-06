@@ -368,3 +368,49 @@ export interface WireTemporalBudgetResponse {
   agentId: string;
   budget: TemporalBudgetInfo;
 }
+
+
+// Sprint 27 — Transport Fingerprint types
+
+export interface FingerprintProfileInfo {
+  agentId: string;
+  activeFingerprintId: string;
+  rotationCount: number;
+  requestCount: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+  assignedUserAgent: string;
+  assignedLanguage: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HeaderProfileInfo {
+  id: string;
+  userAgent: string;
+  acceptLanguage: string;
+  createdAt: number;
+  active: boolean;
+}
+
+export interface WireFingerprintProfilesResponse {
+  profiles: FingerprintProfileInfo[];
+}
+
+export interface WireFingerprintProfileResponse {
+  agentId: string;
+  profile: FingerprintProfileInfo;
+}
+
+export interface WireHeaderProfilesResponse {
+  profiles: HeaderProfileInfo[];
+}
+
+export interface WireHeaderPoliciesResponse {
+  policy: {
+    enabled: boolean;
+    rotateOnPersonaChange: boolean;
+    rotateOnTemporalEscalation: boolean;
+    maxRequestsPerFingerprint: number;
+    strictSensitiveCategoryIsolation: boolean;
+  };
+}

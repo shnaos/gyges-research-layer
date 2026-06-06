@@ -61,3 +61,11 @@ See [`docs/persona-isolation.md`](./persona-isolation.md) for the full Sprint 25
 Sprint 26 adds explicit **Temporal Obfuscation & Query Scheduling** on top of the behavioral privacy and persona isolation layers. Where behavioral privacy tracks correlation risk at the agent level, temporal obfuscation targets the timing signature itself: cadence patterns, burst spikes, and temporal density accumulation.
 
 See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Sprint 26 surface.
+
+---
+
+## Sprint 27 extension: Transport Fingerprint Randomization
+
+Sprint 27 extends the privacy stack below the behavioral, persona, and temporal layers by rotating transport metadata such as `User-Agent`, `Accept-Language`, and safe header sets. It complements behavioral privacy, but it does **not** claim to defeat transport fingerprinting completely.
+
+See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.

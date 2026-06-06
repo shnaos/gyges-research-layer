@@ -250,3 +250,11 @@ Events are emitted via the standard `SecurityEventEngine` and are visible at `GE
 Sprint 26 adds a dedicated **Temporal Obfuscation & Query Scheduling** engine that operates after persona isolation. It reduces cadence patterns, burst signatures, and temporal density accumulation that persona isolation alone does not address.
 
 See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Sprint 26 surface.
+
+---
+
+## Sprint 27 extension: Transport Fingerprint Isolation
+
+Sprint 27 complements persona isolation by rotating transport fingerprints when persona changes, sensitive categories, or saturation increase correlation risk. This reduces stable header reuse between personas, but it does **not** guarantee anonymity or replace network-layer tooling.
+
+See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.
