@@ -358,11 +358,10 @@ describe('RuntimeLeaseManager — lifecycle', () => {
   });
 
   it('listLeases returns only live leases', () => {
-    const lease = leaseManager.acquireLease('agent-a');
+    leaseManager.acquireLease('agent-a');
     clock = 10000; // expire
     const list = leaseManager.listLeases();
     expect(list).toEqual([]);
-    void lease; // used to suppress unused warning
   });
 
   it('acquiring a second lease replaces the first', () => {
