@@ -83,6 +83,8 @@ export * from './temporal-obfuscation/index.js';
 
 export * from './transport-fingerprint/index.js';
 
+export * from './runtime-orchestrator/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

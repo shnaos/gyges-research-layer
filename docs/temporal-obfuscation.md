@@ -289,3 +289,11 @@ GRL is privacy-first infrastructure that reduces surface area. It is not a guara
 Transport fingerprint rotation can run after temporal signals indicate elevated correlation risk. Temporal scheduling reduces timing signatures; transport fingerprint isolation reduces trivially stable header signatures. They are complementary, deterministic layers.
 
 See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.
+
+---
+
+## Sprint 28 extension: Runtime Policy Orchestrator
+
+Sprint 28 adds a central arbitration layer above the temporal obfuscation engine. Temporal obfuscation now also emits a `PolicySignal` with `source: 'temporal_obfuscation'` for each execute-mock request. The `RuntimePolicyOrchestrator` aggregates this signal alongside signals from all other gates to produce a single `CompositeRuntimeDecision`.
+
+See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md) for details.

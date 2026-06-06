@@ -40,3 +40,11 @@ Sprint 27 adds a deterministic, in-memory transport fingerprint layer that rotat
 ## Privacy boundary
 
 Only metadata is returned publicly. Header values are used in-memory for execution, but the read APIs expose only the assigned fingerprint id, risk, language, user-agent, and policy/profile lifecycle metadata.
+
+---
+
+## Sprint 28 extension: Runtime Policy Orchestrator
+
+Sprint 28 adds a central arbitration layer above the transport fingerprint engine. Transport fingerprint isolation now also emits a `PolicySignal` with `source: 'transport_fingerprint'` for each execute-mock request. The `RuntimePolicyOrchestrator` aggregates this signal alongside signals from all other gates to produce a single `CompositeRuntimeDecision`.
+
+See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md) for details.

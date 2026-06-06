@@ -16,7 +16,7 @@ import { runSearch } from './commands/search.js';
 import { runAudit } from './commands/audit.js';
 import { runTrust } from './commands/trust.js';
 import { runIncidents } from './commands/incidents.js';
-import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks } from './commands/runtime.js';
+import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks, runRuntimePolicy, runRuntimePolicySignals, runRuntimePolicyLastDecision } from './commands/runtime.js';
 import { runTransports } from './commands/transports.js';
 import { runAgentsList, runAgentGet, runAgentLeases, runAgentEvict, runAgentRestrict } from './commands/agents.js';
 import {
@@ -158,6 +158,36 @@ runtimeCmd
       } else {
         await runRuntimeProfile(client, cfg);
       }
+    });
+  });
+
+// Sprint 28 — grl runtime policy <subcommand>
+const policyCmd = runtimeCmd
+  .command('policy')
+  .description('Inspect the runtime policy orchestrator');
+
+policyCmd
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runRuntimePolicy(client, cfg);
+    });
+  });
+
+policyCmd
+  .command('signals')
+  .description('List accumulated policy orchestrator signals')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runRuntimePolicySignals(client, cfg);
+    });
+  });
+
+policyCmd
+  .command('last-decision')
+  .description('Show the last composite runtime policy decision')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runRuntimePolicyLastDecision(client, cfg);
     });
   });
 

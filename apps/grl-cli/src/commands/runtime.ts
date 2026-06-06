@@ -131,3 +131,93 @@ export async function runRuntimePacks(
     process.stdout.write('\n');
   }
 }
+
+/**
+ * grl runtime policy — list policy orchestrator policies
+ * grl runtime policy signals — list accumulated policy signals
+ * grl runtime policy last-decision — show last composite decision
+ */
+export async function runRuntimePolicy(
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  const result = await client.listPolicyOrchestratorPolicies();
+
+  if (config.output === 'json') {
+    printJson(result);
+    return;
+  }
+
+  for (const policy of result.policies) {
+    printKeyValue([
+      ['id', policy.id],
+      ['enabled', policy.enabled],
+      ['merge_strategy', policy.mergeStrategy],
+      ['default_action', policy.defaultAction],
+      ['fail_closed', policy.failClosed],
+      ['precedence', policy.precedence.join(', ')]
+    ]);
+    process.stdout.write('\n');
+  }
+}
+
+export async function runRuntimePolicySignals(
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  const result = await client.listPolicyOrchestratorSignals();
+
+  if (config.output === 'json') {
+    printJson(result);
+    return;
+  }
+
+  if (result.signals.length === 0) {
+    process.stdout.write('No signals accumulated.\n');
+    return;
+  }
+
+  for (const signal of result.signals) {
+    printKeyValue([
+      ['id', signal.id],
+      ['source', signal.source],
+      ['action', signal.action],
+      ['severity', signal.severity],
+      ['reason', signal.reason],
+      ['created_at', new Date(signal.createdAt).toISOString()]
+    ]);
+    process.stdout.write('\n');
+  }
+}
+
+export async function runRuntimePolicyLastDecision(
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  const result = await client.getLastPolicyOrchestratorDecision();
+
+  if (config.output === 'json') {
+    printJson(result);
+    return;
+  }
+
+  if (!result.decision) {
+    process.stdout.write('No decision available yet.\n');
+    return;
+  }
+
+  const d = result.decision;
+  printKeyValue([
+    ['action', d.action],
+    ['allowed', d.allowed],
+    ['requires_approval', d.requiresApproval],
+    ['requires_delay', d.requiresDelay],
+    ...(d.delayMs !== undefined ? [['delay_ms', d.delayMs] as [string, unknown]] : []),
+    ['requires_session_rotation', d.requiresSessionRotation],
+    ['requires_fragment_rotation', d.requiresFragmentRotation],
+    ['requires_fingerprint_rotation', d.requiresFingerprintRotation],
+    ['reason', d.reason],
+    ['signal_count', d.signals.length],
+    ['conflict_count', d.conflicts.length]
+  ]);
+}

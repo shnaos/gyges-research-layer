@@ -101,7 +101,10 @@ export type SecurityEventType =
   | 'fingerprint_rotated'
   | 'header_isolation_applied'
   | 'language_isolation_applied'
-  | 'user_agent_rotated';
+  | 'user_agent_rotated'
+  | 'runtime_policy_evaluated'
+  | 'runtime_policy_conflict_detected'
+  | 'runtime_policy_decision_applied';
 
 /**
  * A single, immutable security event.

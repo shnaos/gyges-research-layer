@@ -112,7 +112,11 @@ import {
   type TemporalProfile,
   type TemporalPrivacyBudget,
   type FingerprintProfile,
-  type HeaderIsolationPolicy
+  type HeaderIsolationPolicy,
+  RuntimePolicyOrchestrator,
+  createSignal,
+  type PolicySignal,
+  type CompositeRuntimeDecision
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -222,7 +226,14 @@ import {
   type SearchPersonaView,
   type PersonaFragmentBindingView,
   type TemporalProfileView,
-  type TemporalBudgetView
+  type TemporalBudgetView,
+  type PolicySignalView,
+  type PolicyConflictView,
+  type CompositeRuntimeDecisionView,
+  type CompositePrivacyPolicyView,
+  type PolicyOrchestratorPoliciesHttpResponse,
+  type PolicyOrchestratorSignalsHttpResponse,
+  type PolicyOrchestratorLastDecisionHttpResponse
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -694,7 +705,10 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'fingerprint_rotated',
   'header_isolation_applied',
   'language_isolation_applied',
-  'user_agent_rotated'
+  'user_agent_rotated',
+  'runtime_policy_evaluated',
+  'runtime_policy_conflict_detected',
+  'runtime_policy_decision_applied'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -1096,6 +1110,53 @@ function toFingerprintProfileView(p: FingerprintProfile): FingerprintProfileView
   };
 }
 
+/** Convert a CompositeRuntimeDecision to its public HTTP view (no raw input/tokens). */
+function toRuntimePolicyDecisionView(d: CompositeRuntimeDecision): CompositeRuntimeDecisionView {
+  const view: CompositeRuntimeDecisionView = {
+    action: d.action,
+    allowed: d.allowed,
+    requiresDelay: d.requiresDelay,
+    requiresApproval: d.requiresApproval,
+    requiresSessionRotation: d.requiresSessionRotation,
+    requiresFragmentRotation: d.requiresFragmentRotation,
+    requiresFingerprintRotation: d.requiresFingerprintRotation,
+    reason: d.reason,
+    signals: d.signals.map((s): PolicySignalView => ({
+      id: s.id,
+      source: s.source,
+      action: s.action,
+      severity: s.severity,
+      reason: s.reason,
+      createdAt: s.createdAt,
+      ...(s.metadata !== undefined ? { metadata: { ...s.metadata } } : {})
+    })),
+    conflicts: d.conflicts.map((c): PolicyConflictView => ({
+      id: c.id,
+      signalIds: [...c.signalIds],
+      conflictType: c.conflictType,
+      resolution: c.resolution,
+      reason: c.reason
+    }))
+  };
+  if (d.delayMs !== undefined) view.delayMs = d.delayMs;
+  return view;
+}
+
+/**
+ * Map a DefenseAction string to the corresponding UnifiedPrivacyAction for the
+ * runtime policy orchestrator.  Any action not explicitly mapped (e.g.
+ * `escalate_risk`) is treated as `allow` because it does not constitute a
+ * blocking or restrictive decision in the orchestrator's action space.
+ */
+function defenseActionToOrchestratorAction(
+  action: string
+): 'temporary_block' | 'cooldown' | 'require_approval' | 'allow' {
+  if (action === 'temporary_block') return 'temporary_block';
+  if (action === 'cooldown') return 'cooldown';
+  if (action === 'require_approval') return 'require_approval';
+  return 'allow';
+}
+
 function extractPersonaCategory(input: unknown): PersonaCategory {
   const rawCategoryHint =
     typeof input === 'object' && input !== null && !Array.isArray(input) &&
@@ -1416,6 +1477,13 @@ export interface LocalApiOptions {
   /** Transport Fingerprint Engine (Sprint 27). */
   transportFingerprintEngine?: TransportFingerprintEngine;
   /**
+   * Runtime Policy Orchestrator (Sprint 28). Collects policy signals from all
+   * gates, resolves conflicts, and produces a composite privacy decision for
+   * each execute request. In-memory, deterministic, fail-closed. Never stores
+   * tokens, secrets, or raw request input.
+   */
+  runtimePolicyOrchestrator?: RuntimePolicyOrchestrator;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1684,6 +1752,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     options.temporalObfuscationEngine ?? new TemporalObfuscationEngine();
   const transportFingerprintEngine =
     options.transportFingerprintEngine ?? new TransportFingerprintEngine();
+
+  // Sprint 28 — Runtime Policy Orchestrator. Collects signals from all gates
+  // and produces a composite privacy decision. In-memory, deterministic,
+  // fail-closed. Never stores tokens, secrets, or raw request input.
+  const runtimePolicyOrchestrator =
+    options.runtimePolicyOrchestrator ?? new RuntimePolicyOrchestrator();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2416,6 +2490,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: recorded.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'capability_graph',
+        action: 'deny',
+        severity: 'critical',
+        reason: recorded.reason
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: recorded.reason,
@@ -2454,6 +2534,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: recorded.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'capability_graph',
+        action: 'require_approval',
+        severity: 'high',
+        reason: recorded.reason
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: recorded.reason,
@@ -2480,6 +2566,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: graphDecision.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'capability_graph',
+        action: 'rotate_session',
+        severity: 'medium',
+        reason: graphDecision.reason
+      }));
     } else {
       observeSecurity({
         type: 'capability_graph_allowed',
@@ -2494,6 +2586,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           pathRisk: graphDecision.risk
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'capability_graph',
+        action: 'allow',
+        severity: 'info',
+        reason: graphDecision.reason
+      }));
     }
 
     // ── Compartment Trust gate (Sprint 14) — runs BEFORE the defense pipeline ──
@@ -2508,6 +2606,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const trustView: TrustView = toTrustView(trustProfile);
 
     if (trustProfile.score.level === 'quarantined') {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'trust_reputation',
+        action: 'deny',
+        severity: 'critical',
+        reason: 'Compartment quarantined.'
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Compartment quarantined.',
@@ -2551,10 +2655,22 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'trust_reputation',
+        action: 'require_approval',
+        severity: 'high',
+        reason: 'Compartment restricted; human approval required.'
+      }));
       return res.status(200).json(response);
     }
 
-    // ── Behavioral Privacy gate (Sprint 24) ──
+    // Trust neutral/trusted — continue.
+    runtimePolicyOrchestrator.emit(createSignal({
+      source: 'trust_reputation',
+      action: 'allow',
+      severity: 'info',
+      reason: `Trust level: ${trustProfile.score.level}.`
+    }));
     const bpDecision: BehavioralPrivacyDecision =
       behavioralPrivacyEngine.evaluateRequest({
         agentId: request.agentId,
@@ -2573,6 +2689,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           'Behavioral privacy engine blocked the request due to critical correlation risk.',
         metadata: { reason: bpDecision.reason }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'behavioral_privacy',
+        action: 'deny',
+        severity: 'critical',
+        reason: bpDecision.reason ?? 'behavioral_privacy_blocked'
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: bpDecision.reason ?? 'behavioral_privacy_blocked',
@@ -2580,6 +2702,30 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         trust: trustView
       };
       return res.status(200).json(response);
+    }
+
+    // Emit behavioral privacy signal for the allowed path.
+    if (bpDecision.requiresFragmentation) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'behavioral_privacy',
+        action: 'rotate_fragment',
+        severity: 'medium',
+        reason: bpDecision.reason ?? 'Behavioral fragmentation required.'
+      }));
+    } else if (bpDecision.requiresDelay) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'behavioral_privacy',
+        action: 'delay',
+        severity: 'low',
+        reason: bpDecision.reason ?? 'Behavioral jitter required.'
+      }));
+    } else {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'behavioral_privacy',
+        action: 'allow',
+        severity: 'info',
+        reason: 'Behavioral privacy OK.'
+      }));
     }
 
     if (bpDecision.requiresDelay) {
@@ -2748,6 +2894,30 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // Record the search on the persona (increments searchCount, recomputes risk).
     personaIsolationEngine.recordPersonaSearch(request.agentId, categoryHint);
 
+    // Emit persona isolation signal.
+    if (isolationDecision.requiresBehavioralEscalation) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'persona_isolation',
+        action: 'rotate_fragment',
+        severity: 'high',
+        reason: isolationDecision.reason ?? 'Persona behavioral escalation.'
+      }));
+    } else if (isolationDecision.requiresNewFragment) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'persona_isolation',
+        action: 'rotate_fragment',
+        severity: 'medium',
+        reason: isolationDecision.reason ?? 'Persona fragment rotation required.'
+      }));
+    } else {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'persona_isolation',
+        action: 'allow',
+        severity: 'info',
+        reason: 'Persona isolation OK.'
+      }));
+    }
+
     // ── Temporal Obfuscation gate (Sprint 26) ──
     // Evaluates cadence, burst, and budget risk for the agent and emits audit
     // events. Does NOT block the request — produces delay metadata only.
@@ -2842,6 +3012,37 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       reason: temporalDecision.reason
     };
 
+    // Emit temporal obfuscation signal.
+    if (!temporalDecision.allowed) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'temporal_obfuscation',
+        action: 'temporary_block',
+        severity: 'high',
+        reason: 'Temporal privacy budget exhausted.'
+      }));
+    } else if (temporalDecision.requiresSchedulingEscalation) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'temporal_obfuscation',
+        action: 'cooldown',
+        severity: 'medium',
+        reason: temporalDecision.reason ?? 'Temporal scheduling escalation.'
+      }));
+    } else if (temporalDecision.requiresDelay) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'temporal_obfuscation',
+        action: 'delay',
+        severity: 'low',
+        reason: temporalDecision.reason ?? 'Temporal spacing required.'
+      }));
+    } else {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'temporal_obfuscation',
+        action: 'allow',
+        severity: 'info',
+        reason: 'Temporal risk OK.'
+      }));
+    }
+
     const fingerprintState = applyTransportFingerprint({
       agentId: request.agentId,
       compartmentId: request.compartmentId,
@@ -2850,6 +3051,23 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       temporalEscalation: temporalDecision.requiresSchedulingEscalation,
       sensitiveCategoryDetected: isSensitivePersonaCategory(categoryHint)
     });
+
+    // Emit transport fingerprint signal.
+    if (fingerprintState.rotated) {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'transport_fingerprint',
+        action: 'rotate_fingerprint',
+        severity: 'low',
+        reason: fingerprintState.decision.reason ?? 'Fingerprint rotation applied.'
+      }));
+    } else {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'transport_fingerprint',
+        action: 'allow',
+        severity: 'info',
+        reason: 'Transport fingerprint OK.'
+      }));
+    }
 
     // Discriminated outcome of applying one non-`allow` defense action.
     type DefenseTerminal =
@@ -2998,6 +3216,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: rateDecision.reason
         }
       });
+      // Map rate limit action to a UnifiedPrivacyAction for the orchestrator.
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'adaptive_defense',
+        action: defenseActionToOrchestratorAction(rateDecision.action),
+        severity: 'high',
+        reason: rateDecision.reason
+      }));
       const terminal = resolveDefense(
         'rate_limit',
         rateDecision.action,
@@ -3045,6 +3270,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         .map((action) => adaptiveDecisions.find((d) => d.action === action))
         .find((decision) => decision !== undefined);
       if (chosen) {
+        runtimePolicyOrchestrator.emit(createSignal({
+          source: 'adaptive_defense',
+          action: defenseActionToOrchestratorAction(chosen.action),
+          severity: 'high',
+          reason: chosen.reason
+        }));
         const terminal = resolveDefense(
           'adaptive_defense',
           chosen.action,
@@ -3087,6 +3318,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: decision.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'capability_firewall',
+        action: 'deny',
+        severity: 'critical',
+        reason: decision.reason
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: decision.reason,
@@ -3122,6 +3359,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: decision.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'capability_firewall',
+        action: 'require_approval',
+        severity: 'high',
+        reason: decision.reason
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: decision.reason,
@@ -3147,6 +3390,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         reason: decision.reason
       }
     });
+    runtimePolicyOrchestrator.emit(createSignal({
+      source: 'capability_firewall',
+      action: 'allow',
+      severity: 'info',
+      reason: decision.reason
+    }));
 
     // Allowed without confirmation: resolve the routing decision FIRST (the
     // Transport Policy Engine consults only tool + riskLevel and never touches
@@ -3207,6 +3456,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         isolationLevel: routing.isolationLevel
       }
     });
+    runtimePolicyOrchestrator.emit(createSignal({
+      source: 'transport_policy',
+      action: 'allow',
+      severity: 'info',
+      reason: routing.reason ?? 'Transport routing resolved.'
+    }));
 
     // Privacy Boundary Engine (Sprint 9): evaluate anti-correlation AFTER routing
     // is resolved but BEFORE any session is minted/rotated. The engine consults
@@ -3243,6 +3498,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: privacy.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'privacy_boundary',
+        action: 'deny',
+        severity: 'critical',
+        reason: privacy.reason
+      }));
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Privacy boundary blocked execution.',
@@ -3289,6 +3550,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'privacy_boundary',
+        action: 'require_approval',
+        severity: 'high',
+        reason: privacy.reason
+      }));
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
@@ -3309,6 +3576,19 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: privacy.reason
         }
       });
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'privacy_boundary',
+        action: 'rotate_session',
+        severity: 'medium',
+        reason: privacy.reason
+      }));
+    } else {
+      runtimePolicyOrchestrator.emit(createSignal({
+        source: 'privacy_boundary',
+        action: 'allow',
+        severity: 'info',
+        reason: 'Privacy boundary OK.'
+      }));
     }
 
     // The session rotates when the routing decision, the privacy boundary, OR
@@ -3415,6 +3695,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
             sandboxViolations: sandboxViolationCodes
           }
         });
+        runtimePolicyOrchestrator.emit(createSignal({
+          source: 'sandbox',
+          action: 'deny',
+          severity: 'critical',
+          reason: 'Sandbox blocked execution.'
+        }));
       } else {
         observeSecurity({
           type: 'sandbox_allowed',
@@ -3430,6 +3716,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
             transportKind: result.transportKind
           }
         });
+        runtimePolicyOrchestrator.emit(createSignal({
+          source: 'sandbox',
+          action: 'allow',
+          severity: 'info',
+          reason: 'Sandbox allowed execution.'
+        }));
       }
     }
 
@@ -3511,6 +3803,52 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       execution.error = result.error;
     }
 
+    // ── Sprint 28 — Runtime Policy Orchestrator ──
+    // Evaluate all accumulated signals from this request's gate pipeline and
+    // produce a composite privacy decision. Emit 3 audit events (evaluated,
+    // conflict_detected if applicable, decision_applied). Never logs raw input,
+    // tokens, or secrets. Emitted directly (not via observeSecurity) to avoid
+    // an audit→heuristics→orchestrator feedback loop.
+    const orchestratorDecision = runtimePolicyOrchestrator.evaluate(
+      runtimePolicyOrchestrator.listSignals()
+    );
+    securityEventEngine.emit({
+      type: 'runtime_policy_evaluated',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      message: `Runtime policy evaluated: action="${orchestratorDecision.action}".`,
+      metadata: {
+        action: orchestratorDecision.action,
+        signalCount: orchestratorDecision.signals.length,
+        conflictCount: orchestratorDecision.conflicts.length
+      }
+    });
+    if (orchestratorDecision.conflicts.length > 0) {
+      securityEventEngine.emit({
+        type: 'runtime_policy_conflict_detected',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: `Policy conflicts detected: ${orchestratorDecision.conflicts.length} conflict(s).`,
+        metadata: { conflictCount: orchestratorDecision.conflicts.length }
+      });
+    }
+    securityEventEngine.emit({
+      type: 'runtime_policy_decision_applied',
+      severity: 'info',
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      message: `Runtime policy decision applied: action="${orchestratorDecision.action}".`,
+      metadata: {
+        action: orchestratorDecision.action,
+        allowed: orchestratorDecision.allowed
+      }
+    });
+
     const response: ExecuteMockCapabilityHttpResponse = {
       decision: 'allowed',
       reason: decision.reason,
@@ -3524,7 +3862,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         rotationCount: fingerprintState.profile.rotationCount,
         correlationRisk: fingerprintState.profile.correlationRisk,
         rotated: fingerprintState.rotated
-      }
+      },
+      runtimePolicy: toRuntimePolicyDecisionView(orchestratorDecision)
     };
     // Surface the sandbox decision (allow or block) when the engine enforced it.
     if (result.sandbox !== undefined) {
@@ -5326,6 +5665,68 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   (app as unknown as Record<string, unknown>)['_personaIsolationEngine'] = personaIsolationEngine;
   (app as unknown as Record<string, unknown>)['_temporalObfuscationEngine'] = temporalObfuscationEngine;
   (app as unknown as Record<string, unknown>)['_transportFingerprintEngine'] = transportFingerprintEngine;
+  (app as unknown as Record<string, unknown>)['_runtimePolicyOrchestrator'] = runtimePolicyOrchestrator;
+
+  // ── Sprint 28 — Runtime Policy Orchestrator endpoints ──
+  // Metadata only: policies, accumulated signals, last composite decision.
+  // Never raw input, never tokens, never secrets.
+
+  // GET /v1/runtime/policy-orchestrator/policies — list registered policies.
+  app.get('/v1/runtime/policy-orchestrator/policies', (_req, res) => {
+    const policies: CompositePrivacyPolicyView[] = runtimePolicyOrchestrator
+      .listPolicies()
+      .map((p) => ({
+        id: p.id,
+        enabled: p.enabled,
+        precedence: [...p.precedence],
+        defaultAction: p.defaultAction,
+        failClosed: p.failClosed,
+        mergeStrategy: p.mergeStrategy
+      }));
+    const body: PolicyOrchestratorPoliciesHttpResponse = { policies };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/policy-orchestrator/policies', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/runtime/policy-orchestrator/policies.'
+    });
+  });
+
+  // GET /v1/runtime/policy-orchestrator/signals — list accumulated signals.
+  app.get('/v1/runtime/policy-orchestrator/signals', (_req, res) => {
+    const signals: PolicySignalView[] = runtimePolicyOrchestrator
+      .listSignals()
+      .map((s): PolicySignalView => ({
+        id: s.id,
+        source: s.source,
+        action: s.action,
+        severity: s.severity,
+        reason: s.reason,
+        createdAt: s.createdAt,
+        ...(s.metadata !== undefined ? { metadata: { ...s.metadata } } : {})
+      }));
+    const body: PolicyOrchestratorSignalsHttpResponse = { signals };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/policy-orchestrator/signals', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/runtime/policy-orchestrator/signals.'
+    });
+  });
+
+  // GET /v1/runtime/policy-orchestrator/last-decision — last composite decision.
+  app.get('/v1/runtime/policy-orchestrator/last-decision', (_req, res) => {
+    const last = runtimePolicyOrchestrator.lastDecision;
+    const body: PolicyOrchestratorLastDecisionHttpResponse = {
+      decision: last ? toRuntimePolicyDecisionView(last) : null
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/runtime/policy-orchestrator/last-decision', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/runtime/policy-orchestrator/last-decision.'
+    });
+  });
 
   // Unknown routes → 404.
   app.use((_req, res) => {

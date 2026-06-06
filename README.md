@@ -463,3 +463,24 @@ Sprint 27 adds deterministic transport fingerprint rotation to reduce trivially 
 
 Inspect it locally with `grl privacy fingerprints [agentId]` and `grl privacy header-policies`.
 See [`docs/transport-fingerprint.md`](docs/transport-fingerprint.md).
+
+## Runtime Policy Orchestrator & Composite Privacy Policies (Sprint 28)
+
+Sprint 28 adds the first **central runtime arbitration layer** in GRL. Each existing privacy and security gate now also emits a `PolicySignal`. The `RuntimePolicyOrchestrator` collects all signals, detects conflicts, resolves them deterministically, and produces a single `CompositeRuntimeDecision` — included in every `execute-mock` response as a `runtimePolicy` block.
+
+Key properties:
+- **Deterministic** — same inputs always produce the same decision.
+- **Inspectable** — every signal and conflict is recorded and queryable.
+- **fail-closed** — unknown critical signals produce `deny` by default.
+- **No AI/ML** — pure static precedence table comparisons only.
+- **No new transport** — the orchestrator is in-memory only.
+
+Inspect it locally:
+
+```bash
+grl runtime policy                  # list registered policies
+grl runtime policy signals          # list accumulated signals
+grl runtime policy last-decision    # show last composite decision
+```
+
+See [`docs/runtime-policy-orchestrator.md`](docs/runtime-policy-orchestrator.md).

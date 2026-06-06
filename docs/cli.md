@@ -548,3 +548,38 @@ grl privacy header-policies
 ```
 
 See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.
+
+---
+
+### `grl runtime policy`
+
+List registered composite privacy policies in the runtime orchestrator (Sprint 28).
+
+```bash
+grl runtime policy
+grl runtime policy --output json
+```
+
+---
+
+### `grl runtime policy signals`
+
+List accumulated policy signals from all execution pipeline gates (Sprint 28).
+
+```bash
+grl runtime policy signals
+grl runtime policy signals --output json
+```
+
+---
+
+### `grl runtime policy last-decision`
+
+Show the last composite runtime decision produced by the orchestrator (Sprint 28).
+
+```bash
+grl runtime policy last-decision
+grl runtime policy last-decision --output json
+```
+
+See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md) for details.
