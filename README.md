@@ -2,6 +2,142 @@
 
 Local-first capability firewall and identity compartmentalization gateway for AI agents performing private web research.
 
+## Installation
+
+```bash
+git clone https://github.com/shnaos/gyges-research-layer.git
+cd gyges-research-layer
+npm install
+npm --prefix apps/grl-cli install
+npm run build
+```
+
+Requires Node.js 20 LTS or later. See [`docs/installation.md`](docs/installation.md) for the full guide.
+
+## Quickstart
+
+```bash
+# Start the local API server
+npm run dev:server
+
+# In another terminal — check health
+npm run cli -- health
+
+# Run a search
+npm run cli -- search "privacy"
+
+# Run all validations
+npm run smoke-test
+```
+
+See [`docs/quickstart.md`](docs/quickstart.md) for the 5-minute guide.
+
+## Package Layout
+
+```
+packages/
+  core/                  @gyges/core          — capability graph, firewall, trust, sessions, audit
+  agent-sdk/             @gyges/agent-sdk      — agent client SDK
+  policy-engine/         @gyges/policy-engine  — policy engine (legacy)
+  identity-compartment/  @gyges/identity-compartment
+  transport-router/      @gyges/transport-router
+  search-adapter-searxng/ @gyges/search-adapter-searxng
+apps/
+  grl-server/            grl-server           — local API server (127.0.0.1:8787)
+  grl-cli/               @gyges/grl-cli       — CLI operator interface
+```
+
+See [`docs/packaging.md`](docs/packaging.md) for the full packaging reference.
+
+## SDK Usage
+
+```ts
+import { GrlAgentClient, isAllowed, isPending, isDenied } from '@gyges/agent-sdk';
+
+const client = new GrlAgentClient(); // connects to http://127.0.0.1:8787
+
+// Search
+const result = await client.search('privacy research');
+if (isAllowed(result)) console.log(result.results);
+if (isPending(result)) console.log('Approval required:', result.approvalRequestId);
+if (isDenied(result)) console.log('Denied:', result.reason);
+
+// Health check
+const health = await client.health();
+console.log(health.status); // 'ok'
+
+// Audit events
+const events = await client.listAuditEvents({ limit: 10 });
+```
+
+See [`docs/agent-sdk.md`](docs/agent-sdk.md) for the full SDK reference.
+
+## CLI Usage
+
+```bash
+# Start server first
+npm run dev:server
+
+# Health check
+npm run cli -- health
+
+# Search
+npm run cli -- search "bitcoin privacy"
+
+# Audit events
+npm run cli -- audit --type execution_failed
+
+# Trust profiles
+npm run cli -- trust
+
+# Runtime profile
+npm run cli -- runtime profile
+
+# Reload config from disk
+npm run cli -- runtime reload
+
+# JSON output
+npm run cli -- health --json
+```
+
+See [`docs/cli.md`](docs/cli.md) for the full CLI reference.
+
+## Runtime Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `strict` | Maximum restrictions — highest isolation, approval-first |
+| `balanced` | Default — balanced security and usability |
+| `research` | Relaxed rate limits for research workflows |
+| `development` | Low friction for local development |
+
+```bash
+GRL_PROFILE=strict npm run dev:server
+GRL_PROFILE=research npm run dev:server
+```
+
+See [`docs/runtime-profiles.md`](docs/runtime-profiles.md) for details.
+
+## Local Distribution
+
+Install `@gyges/agent-sdk` in another local project:
+
+```bash
+npm install /path/to/gyges-research-layer/packages/agent-sdk
+```
+
+Or via `file:` reference in `package.json`:
+
+```json
+{
+  "dependencies": {
+    "@gyges/agent-sdk": "file:../gyges-research-layer/packages/agent-sdk"
+  }
+}
+```
+
+See [`docs/distribution.md`](docs/distribution.md) for the full distribution guide.
+
 ## Why this exists
 
 AI agents doing web research can leak identity, intent, query correlation, and behavioral fingerprints. Gyges Research Layer (GRL) places a defensive layer between agent tools and the web.

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install grl-cli dependencies
+        run: npm --prefix apps/grl-cli install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Smoke test
+        run: npm run smoke-test
+
+      - name: Validate security docs
+        run: npm run validate:security-docs
+
+      - name: Validate package exports
+        run: npm run validate:exports
+
+      - name: Release check
+        run: npm run release-check

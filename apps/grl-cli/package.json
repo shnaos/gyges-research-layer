@@ -1,8 +1,18 @@
 {
   "name": "@gyges/grl-cli",
   "version": "0.1.0",
+  "description": "CLI operator interface for the Gyges Research Layer — local-only, fail-closed.",
   "type": "module",
   "main": "dist/cli.js",
+  "exports": {
+    ".": {
+      "import": "./dist/cli.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "bin": {
     "grl": "./dist/cli.js"
   },
