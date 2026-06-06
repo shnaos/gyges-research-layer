@@ -520,7 +520,14 @@ export type SecurityEventTypeView =
   | 'runtime_profile_loaded'
   | 'runtime_profile_switched'
   | 'runtime_profile_switch_failed'
-  | 'policy_pack_applied';
+  | 'policy_pack_applied'
+  | 'agent_registered'
+  | 'agent_restricted'
+  | 'agent_quarantined'
+  | 'agent_evicted'
+  | 'agent_quota_exceeded'
+  | 'agent_lease_acquired'
+  | 'agent_lease_expired';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -919,3 +926,89 @@ export interface RuntimeProfileSwitchHttpResponse {
   switchedAt: number;
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Sprint 23 — Multi-Agent Runtime Isolation API contracts
+// ---------------------------------------------------------------------------
+
+/** Public, secret-free view of a single agent runtime. */
+export interface AgentRuntimeView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  status: 'active' | 'idle' | 'restricted' | 'quarantined' | 'evicted';
+  compartments: string[];
+  trustScore: number;
+  activeSessions: number;
+  activeExecutions: number;
+  quota: AgentQuotaView;
+  lease?: AgentLeaseView;
+}
+
+/** Public view of agent quota (no sensitive data). */
+export interface AgentQuotaView {
+  maxConcurrentExecutions: number;
+  maxSessions: number;
+  maxApprovalsPending: number;
+  maxAuditEvents: number;
+  maxIncidents: number;
+}
+
+/** Public view of a runtime lease. */
+export interface AgentLeaseView {
+  id: string;
+  acquiredAt: number;
+  expiresAt: number;
+  renewable: boolean;
+  holderAgentId: string;
+}
+
+/** Public trust view for an agent. */
+export interface AgentTrustView {
+  agentId: string;
+  trustScore: number;
+  status: 'active' | 'idle' | 'restricted' | 'quarantined' | 'evicted';
+}
+
+/** Response body for `GET /v1/agents`. */
+export interface AgentsHttpResponse {
+  agents: AgentRuntimeView[];
+}
+
+/** Response body for `GET /v1/agents/:agentId`. */
+export interface AgentHttpResponse {
+  agent: AgentRuntimeView;
+}
+
+/** Response body for `GET /v1/agents/:agentId/leases`. */
+export interface AgentLeasesHttpResponse {
+  agentId: string;
+  leases: AgentLeaseView[];
+}
+
+/** Response body for `GET /v1/agents/:agentId/sessions`. */
+export interface AgentSessionsHttpResponse {
+  agentId: string;
+  activeSessions: number;
+  maxSessions: number;
+}
+
+/** Response body for `GET /v1/agents/:agentId/trust`. */
+export interface AgentTrustHttpResponse {
+  trust: AgentTrustView;
+}
+
+/** Response body for `POST /v1/agents/:agentId/restrict`. */
+export interface AgentRestrictHttpResponse {
+  agentId: string;
+  status: 'restricted';
+  updatedAt: number;
+}
+
+/** Response body for `POST /v1/agents/:agentId/evict`. */
+export interface AgentEvictHttpResponse {
+  agentId: string;
+  status: 'evicted';
+  updatedAt: number;
+}

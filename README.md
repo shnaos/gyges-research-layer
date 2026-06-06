@@ -379,10 +379,38 @@ See [`docs/agent-sdk.md`](docs/agent-sdk.md) for the full reference.
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/runtime-profiles.md`](docs/runtime-profiles.md)
 - [`docs/runtime-config.md`](docs/runtime-config.md)
+- [`docs/multi-agent-runtime.md`](docs/multi-agent-runtime.md)
 - [`docs/agent-sdk.md`](docs/agent-sdk.md)
 - [`docs/cli.md`](docs/cli.md)
 - [`docs/searxng-transport.md`](docs/searxng-transport.md)
 - [`docs/roadmap.md`](docs/roadmap.md)
+
+### Multi-Agent Runtime Isolation (Sprint 23)
+
+Multiple local AI agents can use GRL simultaneously with fully isolated runtime state:
+
+```ts
+import { GrlAgentClient } from '@gyges/agent-sdk';
+
+const client = new GrlAgentClient();
+
+// Inspect registered agent runtimes
+const agents = await client.listAgents();
+
+// Restrict or evict an agent
+await client.restrictAgent('agent-a');
+await client.evictAgent('rogue-agent');
+```
+
+```bash
+# CLI
+grl agents
+grl agents local-agent
+grl agents restrict local-agent
+grl agents evict rogue-agent
+```
+
+See [`docs/multi-agent-runtime.md`](docs/multi-agent-runtime.md) for the full reference.
 
 ## License
 

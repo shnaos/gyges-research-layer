@@ -384,6 +384,38 @@ GRL_CLI_OUTPUT=json grl trust
 
 ---
 
+## Agent Management (Sprint 23)
+
+Inspect and control multi-agent runtimes.
+
+```bash
+# List all registered agent runtimes
+grl agents
+
+# Show a single agent's runtime state
+grl agents local-agent
+
+# List active leases for an agent
+grl agents leases local-agent
+
+# List leases across all agents
+grl agents leases
+
+# Restrict an agent (blocks execution)
+grl agents restrict local-agent
+
+# Evict an agent (permanent, clears all counters)
+grl agents evict local-agent
+
+# JSON output
+grl --output json agents
+grl --output json agents local-agent
+```
+
+See [`docs/multi-agent-runtime.md`](./multi-agent-runtime.md) for the full isolation model.
+
+---
+
 ## Security & Privacy
 
 - **No tokens, secrets, or raw inputs are ever logged** to stdout, stderr, or files.

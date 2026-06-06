@@ -91,7 +91,14 @@ import {
   type PolicyPack,
   type RuntimeProfile,
   type ResolvedRuntimeProfile,
-  type RuntimeProfileName
+  type RuntimeProfileName,
+  AgentRegistry,
+  AgentQuotaManager,
+  RuntimeLeaseManager,
+  RuntimeScheduler,
+  IsolationEngine,
+  type AgentRuntime,
+  type RuntimeLease
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -163,7 +170,18 @@ import {
   RuntimePacksHttpResponse,
   RuntimeProfileSwitchHttpResponse,
   RuntimeProfileView,
-  PolicyPackView
+  PolicyPackView,
+  AgentRuntimeView,
+  AgentQuotaView,
+  AgentLeaseView,
+  AgentTrustView,
+  AgentsHttpResponse,
+  AgentHttpResponse,
+  AgentLeasesHttpResponse,
+  AgentSessionsHttpResponse,
+  AgentTrustHttpResponse,
+  AgentRestrictHttpResponse,
+  AgentEvictHttpResponse
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -608,7 +626,14 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'runtime_profile_loaded',
   'runtime_profile_switched',
   'runtime_profile_switch_failed',
-  'policy_pack_applied'
+  'policy_pack_applied',
+  'agent_registered',
+  'agent_restricted',
+  'agent_quarantined',
+  'agent_evicted',
+  'agent_quota_exceeded',
+  'agent_lease_acquired',
+  'agent_lease_expired'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -903,6 +928,37 @@ function toTrustView(profile: ReputationProfile): TrustView {
     score: profile.score.value,
     level: profile.score.level
   };
+}
+
+/** Project a {@link RuntimeLease} into its public, secret-free HTTP view. */
+function toLeaseView(lease: RuntimeLease): AgentLeaseView {
+  return {
+    id: lease.id,
+    acquiredAt: lease.acquiredAt,
+    expiresAt: lease.expiresAt,
+    renewable: lease.renewable,
+    holderAgentId: lease.holderAgentId
+  };
+}
+
+/** Project an {@link AgentRuntime} into its public, secret-free HTTP view. */
+function toAgentRuntimeView(runtime: AgentRuntime): AgentRuntimeView {
+  const quota: AgentQuotaView = { ...runtime.quota };
+  const view: AgentRuntimeView = {
+    agentId: runtime.agentId,
+    createdAt: runtime.createdAt,
+    updatedAt: runtime.updatedAt,
+    status: runtime.status,
+    compartments: [...runtime.compartments],
+    trustScore: runtime.trustScore,
+    activeSessions: runtime.activeSessions,
+    activeExecutions: runtime.activeExecutions,
+    quota
+  };
+  if (runtime.lease !== undefined) {
+    view.lease = toLeaseView(runtime.lease);
+  }
+  return view;
 }
 
 /** Project a single {@link ReputationEvent} into its public, secret-free view. */
@@ -1210,6 +1266,18 @@ export interface LocalApiOptions {
    * is created. Injected for testing.
    */
   profileResolver?: RuntimeProfileResolver;
+  /**
+   * Agent Registry (Sprint 23). Tracks per-agent runtime state (status,
+   * quotas, trust, leases). When omitted, a fresh in-memory registry is
+   * created. No persistence, no network.
+   */
+  agentRegistry?: AgentRegistry;
+  /**
+   * Runtime Lease Manager (Sprint 23). Issues timed leases per agent to
+   * prevent starvation. When omitted, a fresh manager backed by the agent
+   * registry is created. No persistence, no network.
+   */
+  leaseManager?: RuntimeLeaseManager;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1423,6 +1491,16 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const incidentDetector =
     options.incidentDetector ?? buildIncidentDetector();
   const trustEngine = options.trustEngine ?? buildCompartmentTrustEngine();
+
+  // Sprint 23 — Agent Registry and supporting multi-agent components.
+  // All are purely in-memory; no network, persistence, browser, or external
+  // transport work is performed.
+  const agentRegistry = options.agentRegistry ?? new AgentRegistry();
+  const quotaManager = new AgentQuotaManager({ registry: agentRegistry });
+  const leaseManager =
+    options.leaseManager ?? new RuntimeLeaseManager({ registry: agentRegistry });
+  const agentScheduler = new RuntimeScheduler({ registry: agentRegistry });
+  const isolationEngine = new IsolationEngine({ registry: agentRegistry });
 
   // Sprint 16 — the active runtime config. When a loader holding a snapshot is
   // supplied, the policy engines are derived from that snapshot's config;
@@ -4184,6 +4262,180 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       .status(405)
       .json({ error: 'Method not allowed. Use POST /v1/approvals/:id/reject.' });
   });
+
+  // ── Sprint 23 — Multi-Agent Runtime Isolation endpoints ────────────────────
+  // Metadata only: agent runtime state, quotas, leases, sessions, trust.
+  // Never any token, secret, raw input, or cross-agent data.
+
+  // GET /v1/agents — list all registered agent runtimes
+  app.get('/v1/agents', (_req, res) => {
+    const agents = agentRegistry.listAgents().map(toAgentRuntimeView);
+    const body: AgentsHttpResponse = { agents };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/agents', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/agents.' });
+  });
+
+  // GET /v1/agents/:agentId — get a single agent runtime
+  app.get('/v1/agents/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const runtime = agentRegistry.getAgent(agentId);
+    if (runtime === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    const body: AgentHttpResponse = { agent: toAgentRuntimeView(runtime) };
+    return res.status(200).json(body);
+  });
+
+  // POST /v1/agents/:agentId/restrict — restrict an agent
+  app.post('/v1/agents/:agentId/restrict', (req, res) => {
+    const { agentId } = req.params;
+    const existing = agentRegistry.getAgent(agentId);
+    if (existing === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    if (existing.status === 'evicted') {
+      return res
+        .status(400)
+        .json({ error: 'Cannot restrict an evicted agent.' });
+    }
+    const updated = agentRegistry.restrictAgent(agentId);
+    if (updated === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    // Emit audit event — metadata only, never raw input.
+    securityEventEngine.emit({
+      type: 'agent_restricted',
+      severity: 'warning',
+      agentId,
+      message: `Agent "${agentId}" restricted.`,
+      metadata: { trustScore: updated.trustScore }
+    });
+    const body: AgentRestrictHttpResponse = {
+      agentId,
+      status: 'restricted',
+      updatedAt: updated.updatedAt
+    };
+    return res.status(200).json(body);
+  });
+
+  // POST /v1/agents/:agentId/evict — evict an agent
+  app.post('/v1/agents/:agentId/evict', (req, res) => {
+    const { agentId } = req.params;
+    const existing = agentRegistry.getAgent(agentId);
+    if (existing === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    const updated = agentRegistry.evictAgent(agentId);
+    if (updated === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    // Emit audit event — metadata only, never raw input.
+    securityEventEngine.emit({
+      type: 'agent_evicted',
+      severity: 'critical',
+      agentId,
+      message: `Agent "${agentId}" evicted.`,
+      metadata: { trustScore: updated.trustScore }
+    });
+    const body: AgentEvictHttpResponse = {
+      agentId,
+      status: 'evicted',
+      updatedAt: updated.updatedAt
+    };
+    return res.status(200).json(body);
+  });
+
+  // Catch all other methods on the parameterised agent path.
+  app.all('/v1/agents/:agentId', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/agents/:agentId.'
+    });
+  });
+
+  app.all('/v1/agents/:agentId/restrict', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use POST /v1/agents/:agentId/restrict.'
+    });
+  });
+
+  app.all('/v1/agents/:agentId/evict', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use POST /v1/agents/:agentId/evict.'
+    });
+  });
+
+  // GET /v1/agents/:agentId/leases — list active leases for an agent
+  app.get('/v1/agents/:agentId/leases', (req, res) => {
+    const { agentId } = req.params;
+    const runtime = agentRegistry.getAgent(agentId);
+    if (runtime === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    const allLeases = leaseManager.listLeases().filter(
+      (l) => l.holderAgentId === agentId
+    );
+    const body: AgentLeasesHttpResponse = {
+      agentId,
+      leases: allLeases.map(toLeaseView)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/agents/:agentId/leases', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/agents/:agentId/leases.'
+    });
+  });
+
+  // GET /v1/agents/:agentId/sessions — session quota summary for an agent
+  app.get('/v1/agents/:agentId/sessions', (req, res) => {
+    const { agentId } = req.params;
+    const runtime = agentRegistry.getAgent(agentId);
+    if (runtime === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    const body: AgentSessionsHttpResponse = {
+      agentId,
+      activeSessions: runtime.activeSessions,
+      maxSessions: runtime.quota.maxSessions
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/agents/:agentId/sessions', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/agents/:agentId/sessions.'
+    });
+  });
+
+  // GET /v1/agents/:agentId/trust — agent-level trust summary
+  app.get('/v1/agents/:agentId/trust', (req, res) => {
+    const { agentId } = req.params;
+    const runtime = agentRegistry.getAgent(agentId);
+    if (runtime === undefined) {
+      return res.status(404).json({ error: `Agent not found: ${agentId}.` });
+    }
+    const trustView: AgentTrustView = {
+      agentId,
+      trustScore: runtime.trustScore,
+      status: runtime.status
+    };
+    const body: AgentTrustHttpResponse = { trust: trustView };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/agents/:agentId/trust', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/agents/:agentId/trust.'
+    });
+  });
+
+  // Expose multi-agent components for test injection / inspection.
+  // These are set on the express app instance so integration tests can reach them.
+  (app as unknown as Record<string, unknown>)['_agentRegistry'] = agentRegistry;
+  (app as unknown as Record<string, unknown>)['_quotaManager'] = quotaManager;
+  (app as unknown as Record<string, unknown>)['_leaseManager'] = leaseManager;
+  (app as unknown as Record<string, unknown>)['_agentScheduler'] = agentScheduler;
+  (app as unknown as Record<string, unknown>)['_isolationEngine'] = isolationEngine;
 
   // Unknown routes → 404.
   app.use((_req, res) => {

@@ -35,5 +35,10 @@ export type {
   RuntimeIncident,
   RuntimeProfileInfo,
   RuntimeProfileSwitchResult,
-  TransportInfo
+  TransportInfo,
+  AgentQuotaInfo,
+  AgentLeaseInfo,
+  AgentRuntimeInfo,
+  AgentTrustInfo,
+  AgentActionResult
 } from './types.js';
