@@ -31,7 +31,7 @@ for (let i = 0; i < 4; i++) {
     cadenceRisk: result.cadenceRisk,
     reason: result.reason
   })
-  engine.record('agent-a', BASE + i * 100)
+  engine.recordExecution('agent-a', BASE + i * 100)
 }
 
 console.log()
@@ -45,7 +45,7 @@ console.log('  requiresSchedulingEscalation:', burstResult.requiresSchedulingEsc
 console.log('  cooldownMs:', burstResult.cooldownMs)
 console.log('  cadenceRisk:', burstResult.cadenceRisk)
 console.log('  reason:', burstResult.reason)
-engine.record('agent-a', BASE + 400)
+engine.recordExecution('agent-a', BASE + 400)
 
 console.log()
 

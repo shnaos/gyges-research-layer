@@ -23,27 +23,27 @@ console.log('=== Temporal Budget Example ===\n')
 
 // Consume budget one by one.
 for (let i = 0; i < 5; i++) {
-  const result = manager.consumeBudget('agent-a', BASE + i * 1_000)
+  const budget = manager.consumeBudget('agent-a', BASE + i * 1_000)
   console.log(`Request ${i + 1}:`, {
-    allowed: result.allowed,
-    remaining: result.remaining,
-    consumed: result.consumed,
-    exhausted: result.exhausted
+    remaining: budget.remaining,
+    consumed: budget.consumed
   })
 }
 
 console.log()
 
-// 6th request — budget exhausted.
-const exhausted = manager.consumeBudget('agent-a', BASE + 5_000)
+// 6th request — budget exhausted (remaining stays at 0, consumed stays capped).
+const exhaustedBudget = manager.consumeBudget('agent-a', BASE + 5_000)
+const exhausted = manager.isExhausted('agent-a', BASE + 5_000)
 console.log('Request 6 (budget exhausted):')
-console.log('  allowed:', exhausted.allowed)
-console.log('  exhausted:', exhausted.exhausted)
-console.log('  forceDelayMs:', exhausted.forceDelayMs)
+console.log('  remaining:', exhaustedBudget.remaining)
+console.log('  consumed:', exhaustedBudget.consumed)
+console.log('  isExhausted:', exhausted)
+console.log('  forceDelayOnExhaustion policy:', manager.getPolicy().forceDelayOnExhaustion)
 console.log()
 
 // Inspect the current budget.
-const budget = manager.getBudget('agent-a', BASE + 5_000)
+const budget = manager.getBudget('agent-a')
 console.log('Current budget state:')
 console.log('  maxRequestsPerWindow:', budget.maxRequestsPerWindow)
 console.log('  consumed:', budget.consumed)
@@ -53,7 +53,7 @@ console.log()
 
 // Reset expired budgets (simulating time passage past the window).
 manager.resetExpiredBudgets(BASE + 65_000)
-const budgetAfterReset = manager.getBudget('agent-a', BASE + 65_000)
+const budgetAfterReset = manager.getBudget('agent-a')
 console.log('After window reset:')
 console.log('  consumed:', budgetAfterReset.consumed)
 console.log('  remaining:', budgetAfterReset.remaining)
@@ -61,7 +61,7 @@ console.log()
 
 // Independent budget per agent.
 manager.consumeBudget('agent-b', BASE)
-const budgetB = manager.getBudget('agent-b', BASE + 1_000)
+const budgetB = manager.getBudget('agent-b')
 console.log('Independent agent-b budget:')
 console.log('  consumed:', budgetB.consumed)
 console.log('  remaining:', budgetB.remaining)

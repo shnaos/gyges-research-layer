@@ -103,9 +103,9 @@ is crossed, a cooldown period is enforced and scheduling escalation is triggered
 | Parameter       | Default | Description                              |
 |-----------------|---------|------------------------------------------|
 | enabled         | true    | Enable/disable burst detection           |
-| burstThreshold  | 8       | Requests per window to trigger burst     |
-| burstWindowMs   | 60000   | Rolling window for burst detection       |
-| cooldownMs      | 30000   | Mandatory cooldown after burst detected  |
+| burstThreshold  | 5       | Requests per window to trigger burst     |
+| burstWindowMs   | 10000   | Rolling window for burst detection       |
+| cooldownMs      | 5000    | Mandatory cooldown after burst detected  |
 
 **Lifecycle:**
 1. Requests are recorded in a per-agent rolling window
