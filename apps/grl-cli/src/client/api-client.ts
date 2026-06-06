@@ -201,6 +201,44 @@ export interface IdentityFragmentsResponse {
   fragments: IdentityFragmentView[];
 }
 
+export interface SearchPersonaView {
+  id: string;
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  category: string;
+  active: boolean;
+  fragmentIds: string[];
+  isolatedSessionIds: string[];
+  searchCount: number;
+  correlationRisk: string;
+}
+
+export interface PersonasResponse {
+  personas: SearchPersonaView[];
+}
+
+export interface PersonasByAgentResponse {
+  agentId: string;
+  personas: SearchPersonaView[];
+}
+
+export interface PersonaFragmentBindingView {
+  personaId: string;
+  fragmentId: string;
+  createdAt: number;
+  active: boolean;
+}
+
+export interface PersonaBindingsResponse {
+  bindings: PersonaFragmentBindingView[];
+}
+
+export interface PersonaBindingsByAgentResponse {
+  agentId: string;
+  bindings: PersonaFragmentBindingView[];
+}
+
 export interface TransportManifest {
   kind: string;
   name: string;
@@ -359,6 +397,27 @@ export class GrlApiClient {
       return this.request<IdentityFragmentsResponse>('GET', `/v1/privacy/fragments/${encoded}`);
     }
     return this.request<IdentityFragmentsResponse>('GET', '/v1/privacy/fragments');
+  }
+
+  async listPersonas(agentId?: string): Promise<PersonasResponse | PersonasByAgentResponse> {
+    if (agentId !== undefined) {
+      const encoded = encodeURIComponent(agentId);
+      return this.request<PersonasByAgentResponse>('GET', `/v1/privacy/personas/${encoded}`);
+    }
+    return this.request<PersonasResponse>('GET', '/v1/privacy/personas');
+  }
+
+  async listPersonaBindings(
+    agentId?: string
+  ): Promise<PersonaBindingsResponse | PersonaBindingsByAgentResponse> {
+    if (agentId !== undefined) {
+      const encoded = encodeURIComponent(agentId);
+      return this.request<PersonaBindingsByAgentResponse>(
+        'GET',
+        `/v1/privacy/persona-bindings/${encoded}`
+      );
+    }
+    return this.request<PersonaBindingsResponse>('GET', '/v1/privacy/persona-bindings');
   }
 
   async runtimeVersion(): Promise<RuntimeVersionResponse> {

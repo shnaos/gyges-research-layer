@@ -19,7 +19,13 @@ import { runIncidents } from './commands/incidents.js';
 import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks } from './commands/runtime.js';
 import { runTransports } from './commands/transports.js';
 import { runAgentsList, runAgentGet, runAgentLeases, runAgentEvict, runAgentRestrict } from './commands/agents.js';
-import { runPrivacyFragments, runPrivacyProfile, runPrivacyProfiles } from './commands/privacy.js';
+import {
+  runPrivacyFragments,
+  runPrivacyProfile,
+  runPrivacyProfiles,
+  runPrivacyPersonas,
+  runPrivacyBindings
+} from './commands/privacy.js';
 
 const program = new Command();
 
@@ -194,6 +200,24 @@ privacyCmd
   .action(async (agentId?: string) => {
     await runCommand(async (client, cfg) => {
       await runPrivacyFragments(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('personas [agentId]')
+  .description('List search personas, optionally filtered to one agent')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyPersonas(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('bindings [agentId]')
+  .description('List persona-fragment bindings, optionally filtered to one agent')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyBindings(agentId, client, cfg);
     });
   });
 

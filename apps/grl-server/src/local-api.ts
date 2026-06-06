@@ -98,11 +98,15 @@ import {
   RuntimeScheduler,
   IsolationEngine,
   BehavioralPrivacyEngine,
+  PersonaIsolationEngine,
   type AgentRuntime,
   type BehavioralPrivacyDecision,
   type BehavioralProfile,
   type IdentityFragment,
-  type RuntimeLease
+  type RuntimeLease,
+  type SearchPersona,
+  type PersonaFragmentBinding,
+  type PersonaCategory
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -190,8 +194,15 @@ import {
   BehavioralProfileHttpResponse,
   IdentityFragmentsHttpResponse,
   JitterPoliciesHttpResponse,
+  PersonasHttpResponse,
+  PersonasByAgentHttpResponse,
+  PersonaBindingsHttpResponse,
+  PersonaBindingsByAgentHttpResponse,
+  SegmentationPoliciesHttpResponse,
   type BehavioralProfileView,
-  type IdentityFragmentView
+  type IdentityFragmentView,
+  type SearchPersonaView,
+  type PersonaFragmentBindingView
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -982,6 +993,34 @@ function toLeaseView(lease: RuntimeLease): AgentLeaseView {
   };
 }
 
+/** Project a {@link SearchPersona} into its public, secret-free HTTP view. */
+function toSearchPersonaView(persona: SearchPersona): SearchPersonaView {
+  return {
+    id: persona.id,
+    agentId: persona.agentId,
+    createdAt: persona.createdAt,
+    updatedAt: persona.updatedAt,
+    category: persona.category,
+    active: persona.active,
+    fragmentIds: [...persona.fragmentIds],
+    isolatedSessionIds: [...persona.isolatedSessionIds],
+    searchCount: persona.searchCount,
+    correlationRisk: persona.correlationRisk
+  };
+}
+
+/** Project a {@link PersonaFragmentBinding} into its public, secret-free HTTP view. */
+function toPersonaFragmentBindingView(
+  binding: PersonaFragmentBinding
+): PersonaFragmentBindingView {
+  return {
+    personaId: binding.personaId,
+    fragmentId: binding.fragmentId,
+    createdAt: binding.createdAt,
+    active: binding.active
+  };
+}
+
 /** Project an {@link AgentRuntime} into its public, secret-free HTTP view. */
 function toAgentRuntimeView(runtime: AgentRuntime): AgentRuntimeView {
   const quota: AgentQuotaView = { ...runtime.quota };
@@ -1273,6 +1312,8 @@ export interface LocalApiOptions {
   trustEngine?: CompartmentTrustEngine;
   /** Behavioral Privacy Engine (Sprint 24). In-memory, deterministic. */
   behavioralPrivacyEngine?: BehavioralPrivacyEngine;
+  /** Persona Isolation Engine (Sprint 25). In-memory, deterministic. */
+  personaIsolationEngine?: PersonaIsolationEngine;
   /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
@@ -1536,6 +1577,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const trustEngine = options.trustEngine ?? buildCompartmentTrustEngine();
   const behavioralPrivacyEngine =
     options.behavioralPrivacyEngine ?? new BehavioralPrivacyEngine();
+  const personaIsolationEngine =
+    options.personaIsolationEngine ?? new PersonaIsolationEngine();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2397,6 +2440,104 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         }
       });
     }
+
+    // ── Persona Isolation gate (Sprint 25) ──
+    // Derive the category from the tool/input metadata. We accept an explicit
+    // `categoryHint` string on the request body (optional, never mandatory) and
+    // coerce it to a PersonaCategory; anything unknown falls back to 'unknown'.
+    const rawCategoryHint =
+      request.input !== null &&
+      typeof request.input === 'object' &&
+      !Array.isArray(request.input) &&
+      'categoryHint' in (request.input as Record<string, unknown>)
+        ? (request.input as Record<string, unknown>)['categoryHint']
+        : undefined;
+    const VALID_CATEGORIES: readonly PersonaCategory[] = [
+      'general','finance','crypto','security','health','politics','development','research','unknown'
+    ];
+    const categoryHint: PersonaCategory =
+      typeof rawCategoryHint === 'string' &&
+      (VALID_CATEGORIES as readonly string[]).includes(rawCategoryHint)
+        ? (rawCategoryHint as PersonaCategory)
+        : 'unknown';
+
+    // Evaluate isolation before mutating state.
+    const isolationDecision = personaIsolationEngine.evaluatePersonaIsolation(
+      request.agentId,
+      categoryHint
+    );
+
+    // Ensure the persona exists / is rotated as needed, then record the search.
+    const activePersona = personaIsolationEngine.getOrCreatePersona(
+      request.agentId,
+      categoryHint
+    );
+
+    // Emit persona_created when this is a freshly-created persona (no searches).
+    if (activePersona.searchCount === 0) {
+      securityEventEngine.emit({
+        type: 'persona_created',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: `Persona created for category "${categoryHint}".`,
+        metadata: { personaId: activePersona.id, category: categoryHint }
+      });
+    }
+
+    // Bind fragment to persona.
+    const bpFragment = behavioralPrivacyEngine.fragmentManager.getActiveFragment(
+      request.agentId
+    );
+    if (bpFragment) {
+      personaIsolationEngine.fragmentManager.bind(activePersona.id, bpFragment.id);
+      personaIsolationEngine.personaStore.bindFragment(activePersona.id, bpFragment.id, Date.now());
+      securityEventEngine.emit({
+        type: 'persona_fragment_bound',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Persona bound to identity fragment.',
+        metadata: { personaId: activePersona.id, fragmentId: bpFragment.id }
+      });
+    }
+
+    // Emit interest_segmentation_triggered when the decision mandates action.
+    if (isolationDecision.requiresNewFragment || isolationDecision.requiresSessionIsolation) {
+      securityEventEngine.emit({
+        type: 'interest_segmentation_triggered',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: `Interest segmentation triggered for category "${categoryHint}".`,
+        metadata: {
+          personaId: isolationDecision.personaId,
+          requiresNewFragment: isolationDecision.requiresNewFragment,
+          requiresSessionIsolation: isolationDecision.requiresSessionIsolation,
+          requiresTransportIsolation: isolationDecision.requiresTransportIsolation,
+          reason: isolationDecision.reason
+        }
+      });
+    }
+
+    // Emit persona_isolation_escalated on critical correlation or behavioral escalation.
+    if (isolationDecision.requiresBehavioralEscalation) {
+      securityEventEngine.emit({
+        type: 'persona_isolation_escalated',
+        severity: 'critical',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Persona isolation escalated due to critical correlation risk.',
+        metadata: { personaId: isolationDecision.personaId, reason: isolationDecision.reason }
+      });
+    }
+
+    // Record the search on the persona (increments searchCount, recomputes risk).
+    personaIsolationEngine.recordPersonaSearch(request.agentId, categoryHint);
 
     // Discriminated outcome of applying one non-`allow` defense action.
     type DefenseTerminal =
@@ -4650,6 +4791,72 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   });
 
+  // ── Sprint 25 — Persona Isolation endpoints ──
+
+  // GET /v1/privacy/personas — list all personas across all agents
+  app.get('/v1/privacy/personas', (_req, res) => {
+    const personas = personaIsolationEngine.listPersonas().map(toSearchPersonaView);
+    const body: PersonasHttpResponse = { personas };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/personas', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/personas.' });
+  });
+
+  // GET /v1/privacy/personas/:agentId — list personas for a specific agent
+  app.get('/v1/privacy/personas/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const personas = personaIsolationEngine.listPersonas(agentId).map(toSearchPersonaView);
+    const body: PersonasByAgentHttpResponse = { agentId, personas };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/personas/:agentId', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/personas/:agentId.' });
+  });
+
+  // GET /v1/privacy/persona-bindings — list all persona-fragment bindings
+  app.get('/v1/privacy/persona-bindings', (req, res) => {
+    const rawAgentId = req.query['agentId'];
+    if (Array.isArray(rawAgentId)) {
+      return res.status(400).json({ error: 'Query "agentId" must be a single value.' });
+    }
+    const agentId = typeof rawAgentId === 'string' && rawAgentId.length > 0 ? rawAgentId : undefined;
+    const bindings = personaIsolationEngine.listPersonaBindings(agentId).map(toPersonaFragmentBindingView);
+    const body: PersonaBindingsHttpResponse = { bindings };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/persona-bindings', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/persona-bindings.' });
+  });
+
+  // GET /v1/privacy/persona-bindings/:agentId — bindings for a specific agent
+  app.get('/v1/privacy/persona-bindings/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const bindings = personaIsolationEngine
+      .listPersonaBindings(agentId)
+      .map(toPersonaFragmentBindingView);
+    const body: PersonaBindingsByAgentHttpResponse = { agentId, bindings };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/persona-bindings/:agentId', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/persona-bindings/:agentId.'
+    });
+  });
+
+  // GET /v1/privacy/segmentation-policies — current segmentation policy
+  app.get('/v1/privacy/segmentation-policies', (_req, res) => {
+    const body: SegmentationPoliciesHttpResponse = {
+      segmentationPolicy: personaIsolationEngine.getSegmentationPolicy()
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/segmentation-policies', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/segmentation-policies.'
+    });
+  });
+
   // Expose multi-agent components for test injection / inspection.
   // These are set on the express app instance so integration tests can reach them.
   (app as unknown as Record<string, unknown>)['_agentRegistry'] = agentRegistry;
@@ -4657,6 +4864,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   (app as unknown as Record<string, unknown>)['_leaseManager'] = leaseManager;
   (app as unknown as Record<string, unknown>)['_agentScheduler'] = agentScheduler;
   (app as unknown as Record<string, unknown>)['_isolationEngine'] = isolationEngine;
+  (app as unknown as Record<string, unknown>)['_personaIsolationEngine'] = personaIsolationEngine;
 
   // Unknown routes → 404.
   app.use((_req, res) => {

@@ -532,7 +532,12 @@ export type SecurityEventTypeView =
   | 'behavior_fragment_rotated'
   | 'behavior_correlation_detected'
   | 'behavioral_jitter_applied'
-  | 'behavioral_privacy_escalated';
+  | 'behavioral_privacy_escalated'
+  | 'persona_created'
+  | 'persona_rotated'
+  | 'persona_isolation_escalated'
+  | 'persona_fragment_bound'
+  | 'interest_segmentation_triggered';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -1071,5 +1076,63 @@ export interface JitterPoliciesHttpResponse {
     repeatedQueryThreshold: number;
     temporalPatternThreshold: number;
     maxBehaviorScore: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 25 — Persona Isolation API contracts
+// ---------------------------------------------------------------------------
+
+/** Public, secret-free view of a {@link SearchPersona}. */
+export interface SearchPersonaView {
+  id: string;
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  category: string;
+  active: boolean;
+  fragmentIds: string[];
+  isolatedSessionIds: string[];
+  searchCount: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+}
+
+/** Response body for `GET /v1/privacy/personas`. */
+export interface PersonasHttpResponse {
+  personas: SearchPersonaView[];
+}
+
+/** Response body for `GET /v1/privacy/personas/:agentId`. */
+export interface PersonasByAgentHttpResponse {
+  agentId: string;
+  personas: SearchPersonaView[];
+}
+
+/** Public, secret-free view of a {@link PersonaFragmentBinding}. */
+export interface PersonaFragmentBindingView {
+  personaId: string;
+  fragmentId: string;
+  createdAt: number;
+  active: boolean;
+}
+
+/** Response body for `GET /v1/privacy/persona-bindings`. */
+export interface PersonaBindingsHttpResponse {
+  bindings: PersonaFragmentBindingView[];
+}
+
+/** Response body for `GET /v1/privacy/persona-bindings/:agentId`. */
+export interface PersonaBindingsByAgentHttpResponse {
+  agentId: string;
+  bindings: PersonaFragmentBindingView[];
+}
+
+/** Response body for `GET /v1/privacy/segmentation-policies`. */
+export interface SegmentationPoliciesHttpResponse {
+  segmentationPolicy: {
+    enabled: boolean;
+    maxSearchesPerPersona: number;
+    forceRotationOnCategoryChange: boolean;
+    isolateHighRiskCategories: boolean;
   };
 }

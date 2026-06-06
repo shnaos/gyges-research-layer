@@ -36,12 +36,21 @@ import type {
   TrustProfile,
   WireBehavioralProfileResponse,
   WireBehavioralProfilesResponse,
-  WireIdentityFragmentsResponse
+  WireIdentityFragmentsResponse,
+  WirePersonasResponse,
+  WirePersonasByAgentResponse,
+  WirePersonaBindingsResponse,
+  WirePersonaBindingsByAgentResponse,
+  SearchPersonaInfo,
+  PersonaFragmentBindingInfo
 } from './types.js';
 import { DEFAULT_SDK_CONFIG } from './types.js';
 
 // Re-export helpers so consumers can use them via the client module too.
 export { isAllowed, isDenied, isPending };
+
+// Re-export persona types for consumers.
+export type { SearchPersonaInfo, PersonaFragmentBindingInfo };
 
 // ---------------------------------------------------------------------------
 // Internal wire types — mirror GRL Local API shapes without importing from
@@ -468,6 +477,48 @@ export class GrlAgentClient {
       );
     }
     return this.request<WireIdentityFragmentsResponse>('GET', '/v1/privacy/fragments');
+  }
+
+  // -------------------------------------------------------------------------
+  // Persona Isolation (Sprint 25)
+  // -------------------------------------------------------------------------
+
+  /** List all search personas, optionally filtered to one agent. */
+  async listPersonas(agentId?: string): Promise<WirePersonasResponse | WirePersonasByAgentResponse> {
+    if (agentId !== undefined) {
+      const encoded = encodeURIComponent(agentId);
+      return this.request<WirePersonasByAgentResponse>(
+        'GET',
+        `/v1/privacy/personas/${encoded}`
+      );
+    }
+    return this.request<WirePersonasResponse>('GET', '/v1/privacy/personas');
+  }
+
+  /** Get all search personas for a specific agent. */
+  async getPersonas(agentId: string): Promise<WirePersonasByAgentResponse> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    return this.request<WirePersonasByAgentResponse>(
+      'GET',
+      `/v1/privacy/personas/${encoded}`
+    );
+  }
+
+  /** List persona-fragment bindings, optionally filtered to one agent. */
+  async listPersonaBindings(
+    agentId?: string
+  ): Promise<WirePersonaBindingsResponse | WirePersonaBindingsByAgentResponse> {
+    if (agentId !== undefined) {
+      const encoded = encodeURIComponent(agentId);
+      return this.request<WirePersonaBindingsByAgentResponse>(
+        'GET',
+        `/v1/privacy/persona-bindings/${encoded}`
+      );
+    }
+    return this.request<WirePersonaBindingsResponse>('GET', '/v1/privacy/persona-bindings');
   }
 
   // -------------------------------------------------------------------------

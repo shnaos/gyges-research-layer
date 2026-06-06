@@ -80,3 +80,62 @@ export async function runPrivacyFragments(
     }))
   )
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 25 — Persona Isolation CLI commands
+// ---------------------------------------------------------------------------
+
+export async function runPrivacyPersonas(
+  agentId: string | undefined,
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  const result = agentId
+    ? await client.listPersonas(agentId)
+    : await client.listPersonas()
+  if (config.output === 'json') {
+    printJson(result)
+    return
+  }
+  printTable(
+    [
+      { header: 'ID', key: 'id' },
+      { header: 'AGENT_ID', key: 'agentId' },
+      { header: 'CATEGORY', key: 'category' },
+      { header: 'ACTIVE', key: 'active' },
+      { header: 'RISK', key: 'correlationRisk' },
+      { header: 'SEARCHES', key: 'searchCount' }
+    ],
+    result.personas.map((persona) => ({
+      ...persona,
+      active: String(persona.active)
+    }))
+  )
+}
+
+export async function runPrivacyBindings(
+  agentId: string | undefined,
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  const result = agentId
+    ? await client.listPersonaBindings(agentId)
+    : await client.listPersonaBindings()
+  if (config.output === 'json') {
+    printJson(result)
+    return
+  }
+  printTable(
+    [
+      { header: 'PERSONA_ID', key: 'personaId' },
+      { header: 'FRAGMENT_ID', key: 'fragmentId' },
+      { header: 'ACTIVE', key: 'active' },
+      { header: 'CREATED_AT', key: 'createdAt' }
+    ],
+    result.bindings.map((binding) => ({
+      ...binding,
+      active: String(binding.active),
+      createdAt: new Date(binding.createdAt).toISOString()
+    }))
+  )
+}

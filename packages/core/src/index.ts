@@ -77,6 +77,8 @@ export * from './multi-agent/index.js';
 
 export * from './behavioral-privacy/index.js';
 
+export * from './persona-isolation/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

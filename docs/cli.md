@@ -162,6 +162,28 @@ grl privacy fragments local-agent
 
 ---
 
+### `grl privacy personas [agentId]`
+
+List search personas for all agents or a single agent (Sprint 25).
+
+```bash
+grl privacy personas
+grl privacy personas local-agent
+```
+
+---
+
+### `grl privacy bindings [agentId]`
+
+List persona-fragment bindings for all agents or a single agent (Sprint 25).
+
+```bash
+grl privacy bindings
+grl privacy bindings local-agent
+```
+
+---
+
 ### `grl incidents`
 
 List runtime security incidents.

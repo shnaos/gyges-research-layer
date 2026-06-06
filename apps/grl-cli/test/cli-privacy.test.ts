@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import http from 'node:http'
 import { AddressInfo } from 'node:net'
 import { GrlApiClient } from '../src/client/api-client.js'
-import { runPrivacyFragments, runPrivacyProfile, runPrivacyProfiles } from '../src/commands/privacy.js'
+import {
+  runPrivacyFragments,
+  runPrivacyProfile,
+  runPrivacyProfiles,
+  runPrivacyPersonas,
+  runPrivacyBindings
+} from '../src/commands/privacy.js'
 import type { GrlCliConfig } from '../src/config/cli-config.js'
 import { CliError } from '../src/errors.js'
 
@@ -98,6 +104,34 @@ const FRAGMENTS_FIXTURE = {
   ]
 }
 
+const PERSONAS_FIXTURE = {
+  personas: [
+    {
+      id: 'persona-1',
+      agentId: 'local-agent',
+      createdAt: 1000,
+      updatedAt: 2000,
+      category: 'finance',
+      active: true,
+      fragmentIds: ['frag-1'],
+      isolatedSessionIds: [],
+      searchCount: 5,
+      correlationRisk: 'medium'
+    }
+  ]
+}
+
+const BINDINGS_FIXTURE = {
+  bindings: [
+    {
+      personaId: 'persona-1',
+      fragmentId: 'frag-1',
+      createdAt: 1000,
+      active: true
+    }
+  ]
+}
+
 describe('privacy CLI commands', () => {
   it('prints privacy profiles in table mode', async () => {
     const { base } = await startServer(
@@ -164,3 +198,72 @@ describe('privacy CLI commands', () => {
     expect(out.get()).toContain('local-agent')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Sprint 25 — Persona CLI tests
+// ---------------------------------------------------------------------------
+
+describe('privacy personas CLI command', () => {
+  it('prints personas in table mode', async () => {
+    const { base } = await startServer(
+      routeServer({
+        'GET /v1/privacy/personas': { status: 200, body: PERSONAS_FIXTURE }
+      })
+    )
+    const cfg = tableConfig(base)
+    const out = captureStdout()
+    await runPrivacyPersonas(undefined, new GrlApiClient(cfg), cfg)
+    out.restore()
+    expect(out.get()).toContain('persona-1')
+    expect(out.get()).toContain('finance')
+  })
+
+  it('prints personas for a specific agent in json mode', async () => {
+    const { base } = await startServer(
+      routeServer({
+        'GET /v1/privacy/personas/local-agent': {
+          status: 200,
+          body: { agentId: 'local-agent', ...PERSONAS_FIXTURE }
+        }
+      })
+    )
+    const cfg = jsonConfig(base)
+    const out = captureStdout()
+    await runPrivacyPersonas('local-agent', new GrlApiClient(cfg), cfg)
+    out.restore()
+    expect(JSON.parse(out.get()).personas[0].agentId).toBe('local-agent')
+  })
+})
+
+describe('privacy bindings CLI command', () => {
+  it('prints bindings in table mode', async () => {
+    const { base } = await startServer(
+      routeServer({
+        'GET /v1/privacy/persona-bindings': { status: 200, body: BINDINGS_FIXTURE }
+      })
+    )
+    const cfg = tableConfig(base)
+    const out = captureStdout()
+    await runPrivacyBindings(undefined, new GrlApiClient(cfg), cfg)
+    out.restore()
+    expect(out.get()).toContain('persona-1')
+    expect(out.get()).toContain('frag-1')
+  })
+
+  it('prints bindings for a specific agent in json mode', async () => {
+    const { base } = await startServer(
+      routeServer({
+        'GET /v1/privacy/persona-bindings/local-agent': {
+          status: 200,
+          body: { agentId: 'local-agent', ...BINDINGS_FIXTURE }
+        }
+      })
+    )
+    const cfg = jsonConfig(base)
+    const out = captureStdout()
+    await runPrivacyBindings('local-agent', new GrlApiClient(cfg), cfg)
+    out.restore()
+    expect(JSON.parse(out.get()).bindings[0].personaId).toBe('persona-1')
+  })
+})
+

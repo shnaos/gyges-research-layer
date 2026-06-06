@@ -83,3 +83,88 @@ describe('@gyges/agent-sdk — behavioral privacy', () => {
     expect(called[1]).toContain('/v1/privacy/fragments/agent-a')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Sprint 25 — Persona Isolation SDK tests
+// ---------------------------------------------------------------------------
+
+describe('@gyges/agent-sdk — persona isolation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('listPersonas returns all personas', async () => {
+    mockFetch(() =>
+      jsonResponse({
+        personas: [
+          {
+            id: 'persona-1',
+            agentId: 'agent-a',
+            createdAt: 1000,
+            updatedAt: 2000,
+            category: 'finance',
+            active: true,
+            fragmentIds: [],
+            isolatedSessionIds: [],
+            searchCount: 3,
+            correlationRisk: 'low'
+          }
+        ]
+      })
+    )
+    const client = new GrlAgentClient()
+    const result = await client.listPersonas()
+    expect((result as any).personas[0].agentId).toBe('agent-a')
+  })
+
+  it('listPersonas scopes to agentId when provided', async () => {
+    const called: string[] = []
+    mockFetch((url) => {
+      called.push(url)
+      return jsonResponse({ agentId: 'agent-a', personas: [] })
+    })
+    const client = new GrlAgentClient()
+    await client.listPersonas('agent-a')
+    expect(called[0]).toContain('/v1/privacy/personas/agent-a')
+  })
+
+  it('getPersonas validates agentId argument', async () => {
+    const client = new GrlAgentClient()
+    await expect(client.getPersonas('')).rejects.toBeInstanceOf(GrlAgentSdkError)
+  })
+
+  it('getPersonas calls the correct endpoint', async () => {
+    const called: string[] = []
+    mockFetch((url) => {
+      called.push(url)
+      return jsonResponse({ agentId: 'agent-b', personas: [] })
+    })
+    const client = new GrlAgentClient()
+    await client.getPersonas('agent-b')
+    expect(called[0]).toContain('/v1/privacy/personas/agent-b')
+  })
+
+  it('listPersonaBindings returns all bindings', async () => {
+    mockFetch(() =>
+      jsonResponse({
+        bindings: [
+          { personaId: 'persona-1', fragmentId: 'frag-1', createdAt: 1000, active: true }
+        ]
+      })
+    )
+    const client = new GrlAgentClient()
+    const result = await client.listPersonaBindings()
+    expect((result as any).bindings[0].personaId).toBe('persona-1')
+  })
+
+  it('listPersonaBindings scopes to agentId when provided', async () => {
+    const called: string[] = []
+    mockFetch((url) => {
+      called.push(url)
+      return jsonResponse({ agentId: 'agent-a', bindings: [] })
+    })
+    const client = new GrlAgentClient()
+    await client.listPersonaBindings('agent-a')
+    expect(called[0]).toContain('/v1/privacy/persona-bindings/agent-a')
+  })
+})

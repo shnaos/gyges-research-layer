@@ -224,6 +224,27 @@ These methods never return raw queries, tokens, or secrets — only behavioral r
 
 ---
 
+## Persona isolation inspection
+
+The SDK exposes metadata-only persona isolation endpoints (Sprint 25):
+
+```ts
+// List all personas across all agents
+const { personas } = await client.listPersonas()
+
+// List personas for a specific agent
+const { personas } = await client.getPersonas('agent-a')
+
+// List persona-fragment bindings (optional agentId filter)
+const { bindings } = await client.listPersonaBindings('agent-a')
+```
+
+These methods never return raw queries, tokens, or secrets — only persona metadata and fragment binding lifecycle fields.
+
+See [`docs/persona-isolation.md`](./persona-isolation.md) for full details.
+
+---
+
 ## Audit events
 
 ```ts
