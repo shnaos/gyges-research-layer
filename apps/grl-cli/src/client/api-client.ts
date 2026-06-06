@@ -167,6 +167,40 @@ export interface AgentActionResponse {
   updatedAt: number;
 }
 
+export interface BehavioralProfileView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+  activeIdentityFragments: number;
+  recentSearchTopics: string[];
+  temporalPatternsDetected: number;
+  repeatedBehaviorScore: number;
+}
+
+export interface BehavioralProfilesResponse {
+  profiles: BehavioralProfileView[];
+}
+
+export interface BehavioralProfileResponse {
+  profile: BehavioralProfileView;
+}
+
+export interface IdentityFragmentView {
+  id: string;
+  agentId: string;
+  createdAt: number;
+  expiresAt: number;
+  isolatedSessionIds: string[];
+  isolatedTransportKinds: string[];
+  active: boolean;
+  requestCount: number;
+}
+
+export interface IdentityFragmentsResponse {
+  fragments: IdentityFragmentView[];
+}
+
 export interface TransportManifest {
   kind: string;
   name: string;
@@ -305,6 +339,26 @@ export class GrlApiClient {
 
   async listIncidents(): Promise<IncidentsResponse> {
     return this.request<IncidentsResponse>('GET', '/v1/security/incidents');
+  }
+
+  async listBehavioralProfiles(): Promise<BehavioralProfilesResponse> {
+    return this.request<BehavioralProfilesResponse>('GET', '/v1/privacy/behavioral/profiles');
+  }
+
+  async getBehavioralProfile(agentId: string): Promise<BehavioralProfileResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<BehavioralProfileResponse>(
+      'GET',
+      `/v1/privacy/behavioral/profiles/${encoded}`
+    );
+  }
+
+  async listIdentityFragments(agentId?: string): Promise<IdentityFragmentsResponse> {
+    if (agentId !== undefined) {
+      const encoded = encodeURIComponent(agentId);
+      return this.request<IdentityFragmentsResponse>('GET', `/v1/privacy/fragments/${encoded}`);
+    }
+    return this.request<IdentityFragmentsResponse>('GET', '/v1/privacy/fragments');
   }
 
   async runtimeVersion(): Promise<RuntimeVersionResponse> {

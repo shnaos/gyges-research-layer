@@ -527,7 +527,12 @@ export type SecurityEventTypeView =
   | 'agent_evicted'
   | 'agent_quota_exceeded'
   | 'agent_lease_acquired'
-  | 'agent_lease_expired';
+  | 'agent_lease_expired'
+  | 'behavior_fragment_created'
+  | 'behavior_fragment_rotated'
+  | 'behavior_correlation_detected'
+  | 'behavioral_jitter_applied'
+  | 'behavioral_privacy_escalated';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -1011,4 +1016,60 @@ export interface AgentEvictHttpResponse {
   agentId: string;
   status: 'evicted';
   updatedAt: number;
+}
+
+// Sprint 24 — Behavioral Privacy API contracts
+export interface BehavioralProfileView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+  activeIdentityFragments: number;
+  recentSearchTopics: string[];
+  temporalPatternsDetected: number;
+  repeatedBehaviorScore: number;
+}
+
+export interface BehavioralProfilesHttpResponse {
+  profiles: BehavioralProfileView[];
+}
+
+export interface BehavioralProfileHttpResponse {
+  profile: BehavioralProfileView;
+}
+
+export interface IdentityFragmentView {
+  id: string;
+  agentId: string;
+  createdAt: number;
+  expiresAt: number;
+  isolatedSessionIds: string[];
+  isolatedTransportKinds: string[];
+  active: boolean;
+  requestCount: number;
+}
+
+export interface IdentityFragmentsHttpResponse {
+  fragments: IdentityFragmentView[];
+}
+
+export interface JitterPoliciesHttpResponse {
+  jitterPolicy: {
+    enabled: boolean;
+    minDelayMs: number;
+    maxDelayMs: number;
+    adaptive: boolean;
+  };
+  fragmentationPolicy: {
+    enabled: boolean;
+    maxRequestsPerFragment: number;
+    fragmentTtlMs: number;
+    forceIsolationOnHighRisk: boolean;
+  };
+  correlationPolicy: {
+    enabled: boolean;
+    repeatedQueryThreshold: number;
+    temporalPatternThreshold: number;
+    maxBehaviorScore: number;
+  };
 }

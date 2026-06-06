@@ -210,6 +210,20 @@ console.log(result.profile.name, result.switchedAt);
 
 ---
 
+## Behavioral privacy inspection
+
+The SDK exposes metadata-only behavioral privacy endpoints:
+
+```ts
+const profiles = await client.listBehavioralProfiles()
+const profile = await client.getBehavioralProfile('agent-a')
+const fragments = await client.listIdentityFragments('agent-a')
+```
+
+These methods never return raw queries, tokens, or secrets — only behavioral risk metadata and fragment lifecycle fields.
+
+---
+
 ## Audit events
 
 ```ts

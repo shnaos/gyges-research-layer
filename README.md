@@ -102,6 +102,18 @@ npm run cli -- health --json
 
 See [`docs/cli.md`](docs/cli.md) for the full CLI reference.
 
+## Behavioral Privacy
+
+Sprint 24 adds a deterministic behavioral privacy layer that tracks only metadata:
+
+- behavioral correlation risk per agent
+- identity fragment rotation on elevated risk
+- deterministic temporal jitter recommendations
+- fail-closed blocking at critical correlation risk
+
+Inspect it locally with `grl privacy profiles`, `grl privacy profile <agentId>`, and `grl privacy fragments [agentId]`.
+See [`docs/behavioral-privacy.md`](docs/behavioral-privacy.md).
+
 ## Runtime Profiles
 
 | Profile | Description |

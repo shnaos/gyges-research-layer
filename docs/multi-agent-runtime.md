@@ -188,6 +188,14 @@ Expired leases are pruned lazily (on next `listLeases()` or `expireLeases()` cal
 
 ---
 
+## Behavioral privacy per agent
+
+Sprint 24 layers behavioral privacy on top of multi-agent isolation. Each `agentId` now also carries a metadata-only behavioral profile and a set of short-lived identity fragments. These are fully in-memory and never shared across agents.
+
+This means concurrent agents are isolated not only by runtime quotas, leases, and trust, but also by their behavioral correlation state.
+
+---
+
 ## Scheduler Behavior
 
 `scheduleExecution(agentId)` is deterministic and synchronous. No threads, no queues. Decision order:

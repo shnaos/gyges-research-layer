@@ -198,3 +198,29 @@ When an incident is open for a compartment, trust score penalties are weighted b
 - **Content confidentiality:** GRL does not encrypt in-flight data (all traffic is loopback).
 - **Anti-forensics:** GRL emits a local audit trail by design. This trail is not encrypted.
 - **Host privacy:** GRL cannot protect against an attacker who has access to the host OS.
+
+---
+
+## 12. Behavioral Privacy & Anti-Correlation
+
+Sprint 24 adds a metadata-only behavioral privacy layer.
+
+### What it tracks
+
+- topic labels only (never raw queries or URLs)
+- temporal burst patterns
+- repeated-behavior score
+- active identity fragment counts
+
+### What it does not track
+
+- raw request input
+- tokens or secrets
+- browser fingerprints
+- durable history beyond process memory
+
+### Mitigations
+
+Depending on risk, GRL may recommend deterministic temporal jitter, rotate an identity fragment, or block the request when correlation risk becomes critical.
+
+All state remains in-memory and is lost on restart.
