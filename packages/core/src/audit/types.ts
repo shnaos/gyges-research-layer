@@ -86,7 +86,12 @@ export type SecurityEventType =
   | 'behavior_fragment_rotated'
   | 'behavior_correlation_detected'
   | 'behavioral_jitter_applied'
-  | 'behavioral_privacy_escalated';
+  | 'behavioral_privacy_escalated'
+  | 'persona_created'
+  | 'persona_rotated'
+  | 'persona_isolation_escalated'
+  | 'persona_fragment_bound'
+  | 'interest_segmentation_triggered';
 
 /**
  * A single, immutable security event.

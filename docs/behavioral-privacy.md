@@ -45,3 +45,11 @@ SDK:
 - `listBehavioralProfiles()`
 - `getBehavioralProfile(agentId)`
 - `listIdentityFragments(agentId?)`
+
+---
+
+## Sprint 25 extension: Persona Isolation
+
+Sprint 25 builds on the behavioral privacy layer by adding explicit **per-category persona isolation**. While behavioral privacy tracks correlation risk at the agent level, persona isolation ensures that different research categories (crypto, finance, health, politics, …) receive entirely separate fragment identities and session spaces.
+
+See [`docs/persona-isolation.md`](./persona-isolation.md) for the full Sprint 25 surface.

@@ -283,3 +283,45 @@ export interface AgentActionResult {
   updatedAt: number;
   raw: unknown;
 }
+
+// ---------------------------------------------------------------------------
+// Persona Isolation (Sprint 25)
+// ---------------------------------------------------------------------------
+
+export interface SearchPersonaInfo {
+  id: string;
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  category: string;
+  active: boolean;
+  fragmentIds: string[];
+  isolatedSessionIds: string[];
+  searchCount: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface PersonaFragmentBindingInfo {
+  personaId: string;
+  fragmentId: string;
+  createdAt: number;
+  active: boolean;
+}
+
+export interface WirePersonasResponse {
+  personas: SearchPersonaInfo[];
+}
+
+export interface WirePersonasByAgentResponse {
+  agentId: string;
+  personas: SearchPersonaInfo[];
+}
+
+export interface WirePersonaBindingsResponse {
+  bindings: PersonaFragmentBindingInfo[];
+}
+
+export interface WirePersonaBindingsByAgentResponse {
+  agentId: string;
+  bindings: PersonaFragmentBindingInfo[];
+}

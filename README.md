@@ -114,6 +114,18 @@ Sprint 24 adds a deterministic behavioral privacy layer that tracks only metadat
 Inspect it locally with `grl privacy profiles`, `grl privacy profile <agentId>`, and `grl privacy fragments [agentId]`.
 See [`docs/behavioral-privacy.md`](docs/behavioral-privacy.md).
 
+## Persona Isolation
+
+Sprint 25 adds explicit per-category persona isolation to prevent a single agent from developing a unified behavioural profile across unrelated research domains:
+
+- each research category (finance, crypto, health, politics, …) receives an isolated persona
+- category changes trigger fragment and session rotation
+- high-risk categories enforce transport isolation
+- correlation risk is tracked and escalated per persona, not globally
+
+Inspect it locally with `grl privacy personas [agentId]` and `grl privacy bindings [agentId]`.
+See [`docs/persona-isolation.md`](docs/persona-isolation.md).
+
 ## Runtime Profiles
 
 | Profile | Description |
