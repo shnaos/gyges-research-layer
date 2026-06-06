@@ -33,7 +33,10 @@ import type {
   SearchResult,
   SearchResultItem,
   TransportInfo,
-  TrustProfile
+  TrustProfile,
+  WireBehavioralProfileResponse,
+  WireBehavioralProfilesResponse,
+  WireIdentityFragmentsResponse
 } from './types.js';
 import { DEFAULT_SDK_CONFIG } from './types.js';
 
@@ -436,6 +439,35 @@ export class GrlAgentClient {
       `/v1/trust/profiles/${encoded}`
     );
     return wire.profile;
+  }
+
+  /** List all behavioral profiles. */
+  async listBehavioralProfiles(): Promise<WireBehavioralProfilesResponse> {
+    return this.request<WireBehavioralProfilesResponse>('GET', '/v1/privacy/behavioral/profiles');
+  }
+
+  /** Get the behavioral profile for a specific agent. */
+  async getBehavioralProfile(agentId: string): Promise<WireBehavioralProfileResponse> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    return this.request<WireBehavioralProfileResponse>(
+      'GET',
+      `/v1/privacy/behavioral/profiles/${encoded}`
+    );
+  }
+
+  /** List identity fragments, optionally filtered to one agent. */
+  async listIdentityFragments(agentId?: string): Promise<WireIdentityFragmentsResponse> {
+    if (agentId !== undefined) {
+      const encoded = encodeURIComponent(agentId);
+      return this.request<WireIdentityFragmentsResponse>(
+        'GET',
+        `/v1/privacy/fragments/${encoded}`
+      );
+    }
+    return this.request<WireIdentityFragmentsResponse>('GET', '/v1/privacy/fragments');
   }
 
   // -------------------------------------------------------------------------

@@ -97,7 +97,11 @@ import {
   RuntimeLeaseManager,
   RuntimeScheduler,
   IsolationEngine,
+  BehavioralPrivacyEngine,
   type AgentRuntime,
+  type BehavioralPrivacyDecision,
+  type BehavioralProfile,
+  type IdentityFragment,
   type RuntimeLease
 } from '../../../packages/core/src/index.js';
 import {
@@ -181,7 +185,13 @@ import {
   AgentSessionsHttpResponse,
   AgentTrustHttpResponse,
   AgentRestrictHttpResponse,
-  AgentEvictHttpResponse
+  AgentEvictHttpResponse,
+  BehavioralProfilesHttpResponse,
+  BehavioralProfileHttpResponse,
+  IdentityFragmentsHttpResponse,
+  JitterPoliciesHttpResponse,
+  type BehavioralProfileView,
+  type IdentityFragmentView
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -633,7 +643,12 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'agent_evicted',
   'agent_quota_exceeded',
   'agent_lease_acquired',
-  'agent_lease_expired'
+  'agent_lease_expired',
+  'behavior_fragment_created',
+  'behavior_fragment_rotated',
+  'behavior_correlation_detected',
+  'behavioral_jitter_applied',
+  'behavioral_privacy_escalated'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -927,6 +942,32 @@ function toTrustView(profile: ReputationProfile): TrustView {
     compartmentId: profile.compartmentId,
     score: profile.score.value,
     level: profile.score.level
+  };
+}
+
+function toBehavioralProfileView(profile: BehavioralProfile): BehavioralProfileView {
+  return {
+    agentId: profile.agentId,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    correlationRisk: profile.correlationRisk,
+    activeIdentityFragments: profile.activeIdentityFragments,
+    recentSearchTopics: [...profile.recentSearchTopics],
+    temporalPatternsDetected: profile.temporalPatternsDetected,
+    repeatedBehaviorScore: profile.repeatedBehaviorScore
+  };
+}
+
+function toIdentityFragmentView(fragment: IdentityFragment): IdentityFragmentView {
+  return {
+    id: fragment.id,
+    agentId: fragment.agentId,
+    createdAt: fragment.createdAt,
+    expiresAt: fragment.expiresAt,
+    isolatedSessionIds: [...fragment.isolatedSessionIds],
+    isolatedTransportKinds: [...fragment.isolatedTransportKinds],
+    active: fragment.active,
+    requestCount: fragment.requestCount
   };
 }
 
@@ -1230,6 +1271,8 @@ export interface LocalApiOptions {
    * tokens, secrets, or raw request input.
    */
   trustEngine?: CompartmentTrustEngine;
+  /** Behavioral Privacy Engine (Sprint 24). In-memory, deterministic. */
+  behavioralPrivacyEngine?: BehavioralPrivacyEngine;
   /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
@@ -1491,6 +1534,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   const incidentDetector =
     options.incidentDetector ?? buildIncidentDetector();
   const trustEngine = options.trustEngine ?? buildCompartmentTrustEngine();
+  const behavioralPrivacyEngine =
+    options.behavioralPrivacyEngine ?? new BehavioralPrivacyEngine();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2255,6 +2300,102 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalToken: created.token.value
       };
       return res.status(200).json(response);
+    }
+
+    // ── Behavioral Privacy gate (Sprint 24) ──
+    const bpDecision: BehavioralPrivacyDecision =
+      behavioralPrivacyEngine.evaluateRequest({
+        agentId: request.agentId,
+        riskLevel: request.riskLevel as 'low' | 'medium' | 'high'
+      });
+    behavioralPrivacyEngine.recordBehavior({ agentId: request.agentId });
+
+    if (!bpDecision.allowed) {
+      securityEventEngine.emit({
+        type: 'behavioral_privacy_escalated',
+        severity: 'critical',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message:
+          'Behavioral privacy engine blocked the request due to critical correlation risk.',
+        metadata: { reason: bpDecision.reason }
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: bpDecision.reason ?? 'behavioral_privacy_blocked',
+        capabilityGraph: capabilityGraphView,
+        trust: trustView
+      };
+      return res.status(200).json(response);
+    }
+
+    if (bpDecision.requiresDelay) {
+      securityEventEngine.emit({
+        type: 'behavioral_jitter_applied',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Behavioral jitter recommended.',
+        metadata: {
+          delayMs: bpDecision.recommendedDelayMs,
+          reason: bpDecision.reason
+        }
+      });
+    }
+
+    if (bpDecision.requiresFragmentation) {
+      const fragment = behavioralPrivacyEngine.fragmentManager.rotateFragment(
+        request.agentId
+      );
+      securityEventEngine.emit({
+        type: 'behavior_fragment_rotated',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Identity fragment rotated due to elevated correlation risk.',
+        metadata: { fragmentId: fragment.id, reason: bpDecision.reason }
+      });
+    } else {
+      const fragment = behavioralPrivacyEngine.fragmentManager.getActiveFragment(
+        request.agentId
+      );
+      if (fragment.requestCount === 0) {
+        securityEventEngine.emit({
+          type: 'behavior_fragment_created',
+          severity: 'info',
+          agentId: request.agentId,
+          compartmentId: request.compartmentId,
+          requestId,
+          message: 'New identity fragment created.',
+          metadata: { fragmentId: fragment.id }
+        });
+      }
+      behavioralPrivacyEngine.fragmentManager.recordRequest(request.agentId, fragment.id);
+    }
+    const refreshedBehavioralProfile = behavioralPrivacyEngine.refreshProfile(
+      request.agentId
+    );
+    if (refreshedBehavioralProfile.correlationRisk !== 'low') {
+      securityEventEngine.emit({
+        type: 'behavior_correlation_detected',
+        severity:
+          refreshedBehavioralProfile.correlationRisk === 'critical'
+            ? 'critical'
+            : 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Behavioral correlation risk detected.',
+        metadata: {
+          correlationRisk: refreshedBehavioralProfile.correlationRisk,
+          repeatedBehaviorScore: refreshedBehavioralProfile.repeatedBehaviorScore,
+          temporalPatternsDetected:
+            refreshedBehavioralProfile.temporalPatternsDetected
+        }
+      });
     }
 
     // Discriminated outcome of applying one non-`allow` defense action.
@@ -4426,6 +4567,86 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   app.all('/v1/agents/:agentId/trust', (_req, res) => {
     res.status(405).json({
       error: 'Method not allowed. Use GET /v1/agents/:agentId/trust.'
+    });
+  });
+
+  // ── Sprint 24 — Behavioral Privacy endpoints ──
+  app.get('/v1/privacy/behavioral/profiles', (_req, res) => {
+    const profiles = behavioralPrivacyEngine
+      .listProfiles()
+      .map(toBehavioralProfileView);
+    const body: BehavioralProfilesHttpResponse = { profiles };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/behavioral/profiles', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/behavioral/profiles.'
+    });
+  });
+
+  app.get('/v1/privacy/behavioral/profiles/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const profile = behavioralPrivacyEngine.getProfile(agentId);
+    if (profile === undefined) {
+      return res.status(404).json({ error: `Behavioral profile not found: ${agentId}.` });
+    }
+    const body: BehavioralProfileHttpResponse = {
+      profile: toBehavioralProfileView(profile)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/behavioral/profiles/:agentId', (_req, res) => {
+    res.status(405).json({
+      error:
+        'Method not allowed. Use GET /v1/privacy/behavioral/profiles/:agentId.'
+    });
+  });
+
+  app.get('/v1/privacy/fragments', (req, res) => {
+    const rawAgentId = req.query['agentId'];
+    if (Array.isArray(rawAgentId)) {
+      return res.status(400).json({ error: 'Query "agentId" must be a single value.' });
+    }
+    const all =
+      typeof rawAgentId === 'string' && rawAgentId.length > 0
+        ? behavioralPrivacyEngine.fragmentManager.listFragments(rawAgentId)
+        : behavioralPrivacyEngine.fragmentManager.listAllFragments();
+    const body: IdentityFragmentsHttpResponse = {
+      fragments: all.map(toIdentityFragmentView)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/fragments', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/fragments.'
+    });
+  });
+
+  app.get('/v1/privacy/fragments/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const fragments = behavioralPrivacyEngine.fragmentManager.listFragments(agentId);
+    const body: IdentityFragmentsHttpResponse = {
+      fragments: fragments.map(toIdentityFragmentView)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/fragments/:agentId', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/fragments/:agentId.'
+    });
+  });
+
+  app.get('/v1/privacy/jitter-policies', (_req, res) => {
+    const body: JitterPoliciesHttpResponse = {
+      jitterPolicy: behavioralPrivacyEngine.getJitterPolicy(),
+      fragmentationPolicy: behavioralPrivacyEngine.getFragmentationPolicy(),
+      correlationPolicy: behavioralPrivacyEngine.getCorrelationPolicy()
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/jitter-policies', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/jitter-policies.'
     });
   });
 

@@ -81,7 +81,12 @@ export type SecurityEventType =
   | 'agent_evicted'
   | 'agent_quota_exceeded'
   | 'agent_lease_acquired'
-  | 'agent_lease_expired';
+  | 'agent_lease_expired'
+  | 'behavior_fragment_created'
+  | 'behavior_fragment_rotated'
+  | 'behavior_correlation_detected'
+  | 'behavioral_jitter_applied'
+  | 'behavioral_privacy_escalated';
 
 /**
  * A single, immutable security event.

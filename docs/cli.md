@@ -135,6 +135,33 @@ updatedAt     2024-01-01T00:00:00.000Z
 
 ---
 
+### `grl privacy profiles`
+
+List all behavioral privacy profiles.
+
+```bash
+grl privacy profiles
+```
+
+### `grl privacy profile <agentId>`
+
+Show one agent's behavioral privacy metadata.
+
+```bash
+grl privacy profile local-agent
+```
+
+### `grl privacy fragments [agentId]`
+
+List identity fragments for all agents or a single agent.
+
+```bash
+grl privacy fragments
+grl privacy fragments local-agent
+```
+
+---
+
 ### `grl incidents`
 
 List runtime security incidents.

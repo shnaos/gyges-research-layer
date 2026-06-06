@@ -19,6 +19,7 @@ import { runIncidents } from './commands/incidents.js';
 import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks } from './commands/runtime.js';
 import { runTransports } from './commands/transports.js';
 import { runAgentsList, runAgentGet, runAgentLeases, runAgentEvict, runAgentRestrict } from './commands/agents.js';
+import { runPrivacyFragments, runPrivacyProfile, runPrivacyProfiles } from './commands/privacy.js';
 
 const program = new Command();
 
@@ -159,6 +160,40 @@ program
   .action(async () => {
     await runCommand(async (client, cfg) => {
       await runTransports(client, cfg);
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// grl privacy [subcommand]
+// ---------------------------------------------------------------------------
+const privacyCmd = program
+  .command('privacy')
+  .description('Behavioral privacy inspection commands');
+
+privacyCmd
+  .command('profiles', { isDefault: true })
+  .description('List all behavioral privacy profiles')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyProfiles(client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('profile <agentId>')
+  .description('Show a single behavioral privacy profile')
+  .action(async (agentId: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyProfile(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('fragments [agentId]')
+  .description('List identity fragments, optionally filtered to one agent')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyFragments(agentId, client, cfg);
     });
   });
 

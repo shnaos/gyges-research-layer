@@ -155,6 +155,40 @@ export interface TrustProfile {
   updatedAt: number;
 }
 
+export interface BehavioralProfileInfo {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  correlationRisk: 'low' | 'medium' | 'high' | 'critical';
+  activeIdentityFragments: number;
+  recentSearchTopics: string[];
+  temporalPatternsDetected: number;
+  repeatedBehaviorScore: number;
+}
+
+export interface IdentityFragmentInfo {
+  id: string;
+  agentId: string;
+  createdAt: number;
+  expiresAt: number;
+  isolatedSessionIds: string[];
+  isolatedTransportKinds: string[];
+  active: boolean;
+  requestCount: number;
+}
+
+export interface WireBehavioralProfilesResponse {
+  profiles: BehavioralProfileInfo[];
+}
+
+export interface WireBehavioralProfileResponse {
+  profile: BehavioralProfileInfo;
+}
+
+export interface WireIdentityFragmentsResponse {
+  fragments: IdentityFragmentInfo[];
+}
+
 // ---------------------------------------------------------------------------
 // Incidents
 // ---------------------------------------------------------------------------
