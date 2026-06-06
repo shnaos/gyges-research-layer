@@ -312,9 +312,12 @@ function buildDecision(
   const blocking: readonly UnifiedPrivacyAction[] = ['deny', 'temporary_block', 'cooldown'];
   const allowed = !blocking.includes(action);
 
-  const requiresDelay = action === 'delay' ||
-    (rotations !== undefined && rotations.size > 0 && action !== 'deny' &&
-      action !== 'temporary_block' && action !== 'cooldown');
+  // Delay is required when the primary action is explicitly "delay", OR when
+  // rotations are active alongside a non-blocking action (rotations imply a
+  // brief pipeline pause even if the primary action is not "delay").
+  const hasRotations = rotations !== undefined && rotations.size > 0;
+  const isBlocking = blocking.includes(action);
+  const requiresDelay = action === 'delay' || (hasRotations && !isBlocking);
 
   return {
     action,

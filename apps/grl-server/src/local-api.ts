@@ -1142,6 +1142,21 @@ function toRuntimePolicyDecisionView(d: CompositeRuntimeDecision): CompositeRunt
   return view;
 }
 
+/**
+ * Map a DefenseAction string to the corresponding UnifiedPrivacyAction for the
+ * runtime policy orchestrator.  Any action not explicitly mapped (e.g.
+ * `escalate_risk`) is treated as `allow` because it does not constitute a
+ * blocking or restrictive decision in the orchestrator's action space.
+ */
+function defenseActionToOrchestratorAction(
+  action: string
+): 'temporary_block' | 'cooldown' | 'require_approval' | 'allow' {
+  if (action === 'temporary_block') return 'temporary_block';
+  if (action === 'cooldown') return 'cooldown';
+  if (action === 'require_approval') return 'require_approval';
+  return 'allow';
+}
+
 function extractPersonaCategory(input: unknown): PersonaCategory {
   const rawCategoryHint =
     typeof input === 'object' && input !== null && !Array.isArray(input) &&
@@ -3202,17 +3217,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         }
       });
       // Map rate limit action to a UnifiedPrivacyAction for the orchestrator.
-      const rateLimitOrchestratorAction =
-        rateDecision.action === 'temporary_block'
-          ? ('temporary_block' as const)
-          : rateDecision.action === 'cooldown'
-            ? ('cooldown' as const)
-            : rateDecision.action === 'require_approval'
-              ? ('require_approval' as const)
-              : ('allow' as const);
       runtimePolicyOrchestrator.emit(createSignal({
         source: 'adaptive_defense',
-        action: rateLimitOrchestratorAction,
+        action: defenseActionToOrchestratorAction(rateDecision.action),
         severity: 'high',
         reason: rateDecision.reason
       }));
@@ -3263,17 +3270,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         .map((action) => adaptiveDecisions.find((d) => d.action === action))
         .find((decision) => decision !== undefined);
       if (chosen) {
-        const adaptiveOrchestratorAction =
-          chosen.action === 'temporary_block'
-            ? ('temporary_block' as const)
-            : chosen.action === 'cooldown'
-              ? ('cooldown' as const)
-              : chosen.action === 'require_approval'
-                ? ('require_approval' as const)
-                : ('allow' as const);
         runtimePolicyOrchestrator.emit(createSignal({
           source: 'adaptive_defense',
-          action: adaptiveOrchestratorAction,
+          action: defenseActionToOrchestratorAction(chosen.action),
           severity: 'high',
           reason: chosen.reason
         }));
