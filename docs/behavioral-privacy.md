@@ -53,3 +53,11 @@ SDK:
 Sprint 25 builds on the behavioral privacy layer by adding explicit **per-category persona isolation**. While behavioral privacy tracks correlation risk at the agent level, persona isolation ensures that different research categories (crypto, finance, health, politics, …) receive entirely separate fragment identities and session spaces.
 
 See [`docs/persona-isolation.md`](./persona-isolation.md) for the full Sprint 25 surface.
+
+---
+
+## Sprint 26 extension: Temporal Obfuscation
+
+Sprint 26 adds explicit **Temporal Obfuscation & Query Scheduling** on top of the behavioral privacy and persona isolation layers. Where behavioral privacy tracks correlation risk at the agent level, temporal obfuscation targets the timing signature itself: cadence patterns, burst spikes, and temporal density accumulation.
+
+See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Sprint 26 surface.

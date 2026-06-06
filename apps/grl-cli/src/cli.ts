@@ -24,7 +24,9 @@ import {
   runPrivacyProfile,
   runPrivacyProfiles,
   runPrivacyPersonas,
-  runPrivacyBindings
+  runPrivacyBindings,
+  runPrivacyTemporal,
+  runPrivacyBudgets
 } from './commands/privacy.js';
 
 const program = new Command();
@@ -218,6 +220,24 @@ privacyCmd
   .action(async (agentId?: string) => {
     await runCommand(async (client, cfg) => {
       await runPrivacyBindings(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('temporal [agentId]')
+  .description('List temporal obfuscation profiles (optionally for one agent)')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyTemporal(agentId, client, cfg);
+    });
+  });
+
+privacyCmd
+  .command('budgets [agentId]')
+  .description('List temporal privacy budgets (optionally for one agent)')
+  .action(async (agentId?: string) => {
+    await runCommand(async (client, cfg) => {
+      await runPrivacyBudgets(agentId, client, cfg);
     });
   });
 

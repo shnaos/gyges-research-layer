@@ -184,6 +184,28 @@ grl privacy bindings local-agent
 
 ---
 
+### `grl privacy temporal [agentId]`
+
+List temporal obfuscation profiles for all agents or a single agent (Sprint 26).
+
+```bash
+grl privacy temporal
+grl privacy temporal local-agent
+```
+
+---
+
+### `grl privacy budgets [agentId]`
+
+List temporal privacy budgets for all agents or a single agent (Sprint 26).
+
+```bash
+grl privacy budgets
+grl privacy budgets local-agent
+```
+
+---
+
 ### `grl incidents`
 
 List runtime security incidents.

@@ -139,3 +139,104 @@ export async function runPrivacyBindings(
     }))
   )
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 26 — Temporal Obfuscation CLI commands
+// ---------------------------------------------------------------------------
+
+export async function runPrivacyTemporal(
+  agentId: string | undefined,
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  if (agentId !== undefined) {
+    const result = await client.getTemporalProfile(agentId).catch((err: unknown) => {
+      if (err instanceof CliError && err.code === 'command_failed') {
+        throw new CliError('command_failed', `Temporal profile not found: ${agentId}`)
+      }
+      throw err
+    })
+    if (config.output === 'json') {
+      printJson(result)
+      return
+    }
+    const p = result.profile
+    printKeyValue([
+      ['agentId', p.agentId],
+      ['cadenceRisk', p.cadenceRisk],
+      ['detectedBursts', String(p.detectedBursts)],
+      ['smoothedRequests', String(p.smoothedRequests)],
+      ['currentDelayMs', String(p.currentDelayMs)],
+      ['budgetConsumed', String(p.temporalBudget.consumed)],
+      ['budgetRemaining', String(p.temporalBudget.remaining)],
+      ['budgetResetsAt', new Date(p.temporalBudget.resetsAt).toISOString()],
+      ['updatedAt', new Date(p.updatedAt).toISOString()]
+    ])
+    return
+  }
+  const result = await client.listTemporalProfiles()
+  if (config.output === 'json') {
+    printJson(result)
+    return
+  }
+  printTable(
+    [
+      { header: 'AGENT_ID', key: 'agentId' },
+      { header: 'RISK', key: 'cadenceRisk' },
+      { header: 'BURSTS', key: 'detectedBursts' },
+      { header: 'SMOOTHED', key: 'smoothedRequests' },
+      { header: 'DELAY_MS', key: 'currentDelayMs' },
+      { header: 'UPDATED_AT', key: 'updatedAt' }
+    ],
+    result.profiles.map((p) => ({
+      ...p,
+      updatedAt: new Date(p.updatedAt).toISOString()
+    }))
+  )
+}
+
+export async function runPrivacyBudgets(
+  agentId: string | undefined,
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  if (agentId !== undefined) {
+    const result = await client.getTemporalBudget(agentId).catch((err: unknown) => {
+      if (err instanceof CliError && err.code === 'command_failed') {
+        throw new CliError('command_failed', `Temporal budget not found: ${agentId}`)
+      }
+      throw err
+    })
+    if (config.output === 'json') {
+      printJson(result)
+      return
+    }
+    const b = result.budget
+    printKeyValue([
+      ['agentId', result.agentId],
+      ['maxRequestsPerWindow', String(b.maxRequestsPerWindow)],
+      ['windowMs', String(b.windowMs)],
+      ['consumed', String(b.consumed)],
+      ['remaining', String(b.remaining)],
+      ['resetsAt', new Date(b.resetsAt).toISOString()]
+    ])
+    return
+  }
+  const result = await client.listTemporalBudgets()
+  if (config.output === 'json') {
+    printJson(result)
+    return
+  }
+  printTable(
+    [
+      { header: 'MAX_REQUESTS', key: 'maxRequestsPerWindow' },
+      { header: 'CONSUMED', key: 'consumed' },
+      { header: 'REMAINING', key: 'remaining' },
+      { header: 'RESETS_AT', key: 'resetsAt' }
+    ],
+    result.budgets.map((b) => ({
+      ...b,
+      resetsAt: new Date(b.resetsAt).toISOString()
+    }))
+  )
+}

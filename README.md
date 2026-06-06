@@ -126,6 +126,18 @@ Sprint 25 adds explicit per-category persona isolation to prevent a single agent
 Inspect it locally with `grl privacy personas [agentId]` and `grl privacy bindings [agentId]`.
 See [`docs/persona-isolation.md`](docs/persona-isolation.md).
 
+## Temporal Obfuscation & Query Scheduling (Sprint 26)
+
+Sprint 26 adds a dedicated temporal obfuscation engine that reduces exploitable timing signatures produced by AI agents:
+
+- **Cadence smoothing** — detects fixed inter-request rhythms and applies adaptive delays to break predictable patterns
+- **Burst fragmentation** — detects rapid request spikes and enforces cooldown periods to reduce temporal density
+- **Temporal privacy budget** — enforces per-agent request quotas within rolling time windows
+- **Scheduling decisions** — unified computation layer that combines cadence, burst, and budget signals into delay recommendations
+
+Inspect it locally with `grl privacy temporal [agentId]` and `grl privacy budgets [agentId]`.
+See [`docs/temporal-obfuscation.md`](docs/temporal-obfuscation.md).
+
 ## Runtime Profiles
 
 | Profile | Description |
