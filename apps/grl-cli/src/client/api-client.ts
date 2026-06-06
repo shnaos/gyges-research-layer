@@ -588,4 +588,80 @@ export class GrlApiClient {
   async getHeaderPolicies(): Promise<HeaderPoliciesResponse> {
     return this.request<HeaderPoliciesResponse>('GET', '/v1/privacy/header-policies');
   }
+
+  // Sprint 28 — Runtime Policy Orchestrator
+  async listPolicyOrchestratorPolicies(): Promise<PolicyOrchestratorPoliciesResponse> {
+    return this.request<PolicyOrchestratorPoliciesResponse>(
+      'GET',
+      '/v1/runtime/policy-orchestrator/policies'
+    );
+  }
+
+  async listPolicyOrchestratorSignals(): Promise<PolicyOrchestratorSignalsResponse> {
+    return this.request<PolicyOrchestratorSignalsResponse>(
+      'GET',
+      '/v1/runtime/policy-orchestrator/signals'
+    );
+  }
+
+  async getLastPolicyOrchestratorDecision(): Promise<PolicyOrchestratorLastDecisionResponse> {
+    return this.request<PolicyOrchestratorLastDecisionResponse>(
+      'GET',
+      '/v1/runtime/policy-orchestrator/last-decision'
+    );
+  }
+}
+
+// Sprint 28 — Policy Orchestrator response types
+export interface PolicySignalView {
+  id: string;
+  source: string;
+  action: string;
+  severity: string;
+  reason: string;
+  createdAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PolicyConflictView {
+  id: string;
+  signalIds: string[];
+  conflictType: string;
+  resolution: string;
+  reason: string;
+}
+
+export interface CompositeRuntimeDecisionView {
+  action: string;
+  allowed: boolean;
+  requiresDelay: boolean;
+  delayMs?: number;
+  requiresApproval: boolean;
+  requiresSessionRotation: boolean;
+  requiresFragmentRotation: boolean;
+  requiresFingerprintRotation: boolean;
+  reason: string;
+  signals: PolicySignalView[];
+  conflicts: PolicyConflictView[];
+}
+
+export interface CompositePrivacyPolicyView {
+  id: string;
+  enabled: boolean;
+  precedence: string[];
+  defaultAction: string;
+  failClosed: boolean;
+  mergeStrategy: string;
+}
+
+export interface PolicyOrchestratorPoliciesResponse {
+  policies: CompositePrivacyPolicyView[];
+}
+
+export interface PolicyOrchestratorSignalsResponse {
+  signals: PolicySignalView[];
+}
+
+export interface PolicyOrchestratorLastDecisionResponse {
+  decision: CompositeRuntimeDecisionView | null;
 }

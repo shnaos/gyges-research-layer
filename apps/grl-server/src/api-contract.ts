@@ -195,6 +195,7 @@ export interface ExecuteMockCapabilityHttpResponse {
     correlationRisk: string;
     rotated: boolean;
   };
+  runtimePolicy?: CompositeRuntimeDecisionView;
 }
 
 /** Trust level band a compartment falls into (Sprint 14). */
@@ -571,7 +572,10 @@ export type SecurityEventTypeView =
   | 'fingerprint_rotated'
   | 'header_isolation_applied'
   | 'language_isolation_applied'
-  | 'user_agent_rotated';
+  | 'user_agent_rotated'
+  | 'runtime_policy_evaluated'
+  | 'runtime_policy_conflict_detected'
+  | 'runtime_policy_decision_applied';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -1292,4 +1296,68 @@ export interface HeaderPoliciesHttpResponse {
     maxRequestsPerFingerprint: number;
     strictSensitiveCategoryIsolation: boolean;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 28 — Agent Runtime Policy Orchestrator & Composite Privacy Policies
+// ---------------------------------------------------------------------------
+
+/** Public, secret-free view of a PolicySignal. */
+export interface PolicySignalView {
+  id: string;
+  source: string;
+  action: string;
+  severity: string;
+  reason: string;
+  createdAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+/** Public, secret-free view of a PolicyConflict. */
+export interface PolicyConflictView {
+  id: string;
+  signalIds: string[];
+  conflictType: string;
+  resolution: string;
+  reason: string;
+}
+
+/** Public view of the CompositeRuntimeDecision (no raw input, no tokens). */
+export interface CompositeRuntimeDecisionView {
+  action: string;
+  allowed: boolean;
+  requiresDelay: boolean;
+  delayMs?: number;
+  requiresApproval: boolean;
+  requiresSessionRotation: boolean;
+  requiresFragmentRotation: boolean;
+  requiresFingerprintRotation: boolean;
+  reason: string;
+  signals: PolicySignalView[];
+  conflicts: PolicyConflictView[];
+}
+
+/** Public view of a CompositePrivacyPolicy. */
+export interface CompositePrivacyPolicyView {
+  id: string;
+  enabled: boolean;
+  precedence: string[];
+  defaultAction: string;
+  failClosed: boolean;
+  mergeStrategy: string;
+}
+
+/** Response body for `GET /v1/runtime/policy-orchestrator/policies`. */
+export interface PolicyOrchestratorPoliciesHttpResponse {
+  policies: CompositePrivacyPolicyView[];
+}
+
+/** Response body for `GET /v1/runtime/policy-orchestrator/signals`. */
+export interface PolicyOrchestratorSignalsHttpResponse {
+  signals: PolicySignalView[];
+}
+
+/** Response body for `GET /v1/runtime/policy-orchestrator/last-decision`. */
+export interface PolicyOrchestratorLastDecisionHttpResponse {
+  decision: CompositeRuntimeDecisionView | null;
 }

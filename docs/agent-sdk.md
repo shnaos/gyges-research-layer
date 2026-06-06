@@ -381,3 +381,22 @@ const { policy } = await client.getHeaderPolicies()
 ```
 
 These methods never return raw request input, approval tokens, or secret headers. See [`docs/transport-fingerprint.md`](./transport-fingerprint.md).
+
+---
+
+## Runtime Policy Orchestrator inspection (Sprint 28)
+
+The SDK exposes three metadata-only orchestrator inspection methods:
+
+```ts
+const policies = await client.listRuntimePolicyOrchestratorPolicies();
+// → WireCompositePrivacyPolicyView[]
+
+const signals = await client.listRuntimePolicySignals();
+// → WirePolicySignalView[]
+
+const decision = await client.getLastRuntimePolicyDecision();
+// → WireCompositeRuntimeDecisionView | null
+```
+
+These methods never return raw request input, approval tokens, or secrets. See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md).

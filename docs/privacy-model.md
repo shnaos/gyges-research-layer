@@ -23,3 +23,7 @@ See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Spr
 Sprint 27 adds **Transport Fingerprint Randomization & Header Isolation** — a deterministic layer that rotates secret-free request metadata such as `User-Agent`, `Accept-Language`, and stable header sets. It reduces trivial transport correlation only; it does **not** guarantee anonymity, defeat advanced fingerprinting, or replace Tor/proxy infrastructure.
 
 See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for the full Sprint 27 surface.
+
+Sprint 28 adds the **Runtime Policy Orchestrator & Composite Privacy Policies** — the first central arbitration layer that collects signals from all existing privacy and security gates, resolves conflicts deterministically, and produces a single explainable `CompositeRuntimeDecision`. It does not replace any gate; it aggregates and explains their collective output.
+
+See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md) for the full Sprint 28 surface.

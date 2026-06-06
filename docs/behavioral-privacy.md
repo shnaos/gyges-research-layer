@@ -69,3 +69,11 @@ See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Spr
 Sprint 27 extends the privacy stack below the behavioral, persona, and temporal layers by rotating transport metadata such as `User-Agent`, `Accept-Language`, and safe header sets. It complements behavioral privacy, but it does **not** claim to defeat transport fingerprinting completely.
 
 See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.
+
+---
+
+## Sprint 28 extension: Runtime Policy Orchestrator
+
+Sprint 28 adds a central arbitration layer above the behavioral privacy engine. Behavioral privacy now also emits a `PolicySignal` with `source: 'behavioral_privacy'` for each execute-mock request. The `RuntimePolicyOrchestrator` aggregates this signal alongside signals from all other gates to produce a single `CompositeRuntimeDecision`.
+
+See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md) for details.

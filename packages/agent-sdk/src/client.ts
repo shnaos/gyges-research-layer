@@ -161,6 +161,60 @@ interface WireAgentActionResponse {
   updatedAt: number;
 }
 
+// Sprint 28 — Runtime Policy Orchestrator wire types
+interface WirePolicySignalView {
+  id: string;
+  source: string;
+  action: string;
+  severity: string;
+  reason: string;
+  createdAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface WirePolicyConflictView {
+  id: string;
+  signalIds: string[];
+  conflictType: string;
+  resolution: string;
+  reason: string;
+}
+
+interface WireCompositeRuntimeDecisionView {
+  action: string;
+  allowed: boolean;
+  requiresDelay: boolean;
+  delayMs?: number;
+  requiresApproval: boolean;
+  requiresSessionRotation: boolean;
+  requiresFragmentRotation: boolean;
+  requiresFingerprintRotation: boolean;
+  reason: string;
+  signals: WirePolicySignalView[];
+  conflicts: WirePolicyConflictView[];
+}
+
+interface WireCompositePrivacyPolicyView {
+  id: string;
+  enabled: boolean;
+  precedence: string[];
+  defaultAction: string;
+  failClosed: boolean;
+  mergeStrategy: string;
+}
+
+interface WirePolicyOrchestratorPoliciesResponse {
+  policies: WireCompositePrivacyPolicyView[];
+}
+
+interface WirePolicyOrchestratorSignalsResponse {
+  signals: WirePolicySignalView[];
+}
+
+interface WirePolicyOrchestratorLastDecisionResponse {
+  decision: WireCompositeRuntimeDecisionView | null;
+}
+
 // ---------------------------------------------------------------------------
 // GrlAgentClient
 // ---------------------------------------------------------------------------
@@ -725,5 +779,46 @@ export class GrlAgentClient {
       `/v1/agents/${encoded}/evict`
     );
     return { agentId: wire.agentId, status: wire.status, updatedAt: wire.updatedAt, raw: wire };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sprint 28 — Runtime Policy Orchestrator
+  // ---------------------------------------------------------------------------
+
+  /**
+   * List all registered composite privacy policies in the runtime orchestrator.
+   * Returns metadata only — never raw input, tokens, or secrets.
+   */
+  async listRuntimePolicyOrchestratorPolicies(): Promise<WireCompositePrivacyPolicyView[]> {
+    const wire = await this.request<WirePolicyOrchestratorPoliciesResponse>(
+      'GET',
+      '/v1/runtime/policy-orchestrator/policies'
+    );
+    return wire.policies;
+  }
+
+  /**
+   * List all accumulated policy signals from the runtime orchestrator.
+   * Returns metadata only — never raw input, tokens, or secrets.
+   */
+  async listRuntimePolicySignals(): Promise<WirePolicySignalView[]> {
+    const wire = await this.request<WirePolicyOrchestratorSignalsResponse>(
+      'GET',
+      '/v1/runtime/policy-orchestrator/signals'
+    );
+    return wire.signals;
+  }
+
+  /**
+   * Get the last composite runtime policy decision produced by the orchestrator.
+   * Returns `null` if no decision has been produced yet.
+   * Returns metadata only — never raw input, tokens, or secrets.
+   */
+  async getLastRuntimePolicyDecision(): Promise<WireCompositeRuntimeDecisionView | null> {
+    const wire = await this.request<WirePolicyOrchestratorLastDecisionResponse>(
+      'GET',
+      '/v1/runtime/policy-orchestrator/last-decision'
+    );
+    return wire.decision;
   }
 }
