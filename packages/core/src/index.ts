@@ -79,6 +79,8 @@ export * from './behavioral-privacy/index.js';
 
 export * from './persona-isolation/index.js';
 
+export * from './temporal-obfuscation/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

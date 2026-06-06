@@ -159,6 +159,23 @@ export interface RoutingDecisionView {
  *   `routing` decision and the request was executed through the mock transport,
  *   with `execution` carrying the result.
  */
+
+/**
+ * Temporal obfuscation metadata attached to the execute-mock response.
+ * Carries only delay/risk metadata — never raw input or tokens.
+ */
+export interface TemporalObfuscationView {
+  cadenceRisk: 'low' | 'medium' | 'high' | 'critical';
+  delayMs: number;
+  requiresCadenceSmoothing: boolean;
+  requiresBurstFragmentation: boolean;
+  requiresSchedulingEscalation: boolean;
+  detectedBursts: number;
+  smoothedRequests: number;
+  budgetConsumed: number;
+  budgetRemaining: number;
+  reason: string;
+}
 export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
@@ -171,6 +188,7 @@ export interface ExecuteMockCapabilityHttpResponse {
   execution?: ExecutionResultView;
   approvalRequestId?: string;
   approvalToken?: string;
+  temporalObfuscation?: TemporalObfuscationView;
 }
 
 /** Trust level band a compartment falls into (Sprint 14). */
@@ -537,7 +555,12 @@ export type SecurityEventTypeView =
   | 'persona_rotated'
   | 'persona_isolation_escalated'
   | 'persona_fragment_bound'
-  | 'interest_segmentation_triggered';
+  | 'interest_segmentation_triggered'
+  | 'temporal_spacing_applied'
+  | 'burst_detected'
+  | 'temporal_budget_exhausted'
+  | 'temporal_scheduling_escalated'
+  | 'cadence_smoothing_applied';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -1134,5 +1157,74 @@ export interface SegmentationPoliciesHttpResponse {
     maxSearchesPerPersona: number;
     forceRotationOnCategoryChange: boolean;
     isolateHighRiskCategories: boolean;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 26 — Temporal Obfuscation API contracts
+// ---------------------------------------------------------------------------
+
+/** Public, secret-free view of a temporal profile. */
+export interface TemporalProfileView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  cadenceRisk: 'low' | 'medium' | 'high' | 'critical';
+  recentExecutionTimestamps: number[];
+  detectedBursts: number;
+  smoothedRequests: number;
+  temporalBudget: TemporalBudgetView;
+  currentDelayMs: number;
+}
+
+/** Public view of a temporal privacy budget. */
+export interface TemporalBudgetView {
+  maxRequestsPerWindow: number;
+  windowMs: number;
+  consumed: number;
+  remaining: number;
+  resetsAt: number;
+}
+
+/** Response body for `GET /v1/privacy/temporal/profiles`. */
+export interface TemporalProfilesHttpResponse {
+  profiles: TemporalProfileView[];
+}
+
+/** Response body for `GET /v1/privacy/temporal/profiles/:agentId`. */
+export interface TemporalProfileHttpResponse {
+  profile: TemporalProfileView;
+}
+
+/** Response body for `GET /v1/privacy/temporal/budgets`. */
+export interface TemporalBudgetsHttpResponse {
+  budgets: TemporalBudgetView[];
+}
+
+/** Response body for `GET /v1/privacy/temporal/budgets/:agentId`. */
+export interface TemporalBudgetHttpResponse {
+  agentId: string;
+  budget: TemporalBudgetView;
+}
+
+/** Response body for `GET /v1/privacy/temporal/policies`. */
+export interface TemporalPoliciesHttpResponse {
+  cadencePolicy: {
+    enabled: boolean;
+    minSpacingMs: number;
+    adaptiveSpacing: boolean;
+    burstPenaltyMs: number;
+  };
+  burstPolicy: {
+    enabled: boolean;
+    burstThreshold: number;
+    burstWindowMs: number;
+    cooldownMs: number;
+  };
+  budgetPolicy: {
+    enabled: boolean;
+    maxRequestsPerWindow: number;
+    windowMs: number;
+    forceDelayOnExhaustion: boolean;
   };
 }

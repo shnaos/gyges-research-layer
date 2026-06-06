@@ -325,3 +325,46 @@ export interface WirePersonaBindingsByAgentResponse {
   agentId: string;
   bindings: PersonaFragmentBindingInfo[];
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 26 — Temporal Obfuscation SDK types
+// ---------------------------------------------------------------------------
+
+/** Public view of a temporal privacy budget (no secrets, no raw input). */
+export interface TemporalBudgetInfo {
+  maxRequestsPerWindow: number;
+  windowMs: number;
+  consumed: number;
+  remaining: number;
+  resetsAt: number;
+}
+
+/** Public view of a temporal profile (no secrets, no raw input). */
+export interface TemporalProfileInfo {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  cadenceRisk: 'low' | 'medium' | 'high' | 'critical';
+  recentExecutionTimestamps: number[];
+  detectedBursts: number;
+  smoothedRequests: number;
+  temporalBudget: TemporalBudgetInfo;
+  currentDelayMs: number;
+}
+
+export interface WireTemporalProfilesResponse {
+  profiles: TemporalProfileInfo[];
+}
+
+export interface WireTemporalProfileResponse {
+  profile: TemporalProfileInfo;
+}
+
+export interface WireTemporalBudgetsResponse {
+  budgets: TemporalBudgetInfo[];
+}
+
+export interface WireTemporalBudgetResponse {
+  agentId: string;
+  budget: TemporalBudgetInfo;
+}

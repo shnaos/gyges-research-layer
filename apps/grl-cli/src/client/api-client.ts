@@ -239,6 +239,44 @@ export interface PersonaBindingsByAgentResponse {
   bindings: PersonaFragmentBindingView[];
 }
 
+// Sprint 26 — Temporal Obfuscation types
+export interface TemporalBudgetView {
+  maxRequestsPerWindow: number;
+  windowMs: number;
+  consumed: number;
+  remaining: number;
+  resetsAt: number;
+}
+
+export interface TemporalProfileView {
+  agentId: string;
+  createdAt: number;
+  updatedAt: number;
+  cadenceRisk: 'low' | 'medium' | 'high' | 'critical';
+  recentExecutionTimestamps: number[];
+  detectedBursts: number;
+  smoothedRequests: number;
+  temporalBudget: TemporalBudgetView;
+  currentDelayMs: number;
+}
+
+export interface TemporalProfilesResponse {
+  profiles: TemporalProfileView[];
+}
+
+export interface TemporalProfileResponse {
+  profile: TemporalProfileView;
+}
+
+export interface TemporalBudgetsResponse {
+  budgets: TemporalBudgetView[];
+}
+
+export interface TemporalBudgetResponse {
+  agentId: string;
+  budget: TemporalBudgetView;
+}
+
 export interface TransportManifest {
   kind: string;
   name: string;
@@ -480,5 +518,30 @@ export class GrlApiClient {
   async evictAgent(agentId: string): Promise<AgentActionResponse> {
     const encoded = encodeURIComponent(agentId);
     return this.request<AgentActionResponse>('POST', `/v1/agents/${encoded}/evict`);
+  }
+
+  // Sprint 26 — Temporal Obfuscation
+  async listTemporalProfiles(): Promise<TemporalProfilesResponse> {
+    return this.request<TemporalProfilesResponse>('GET', '/v1/privacy/temporal/profiles');
+  }
+
+  async getTemporalProfile(agentId: string): Promise<TemporalProfileResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<TemporalProfileResponse>(
+      'GET',
+      `/v1/privacy/temporal/profiles/${encoded}`
+    );
+  }
+
+  async listTemporalBudgets(): Promise<TemporalBudgetsResponse> {
+    return this.request<TemporalBudgetsResponse>('GET', '/v1/privacy/temporal/budgets');
+  }
+
+  async getTemporalBudget(agentId: string): Promise<TemporalBudgetResponse> {
+    const encoded = encodeURIComponent(agentId);
+    return this.request<TemporalBudgetResponse>(
+      'GET',
+      `/v1/privacy/temporal/budgets/${encoded}`
+    );
   }
 }

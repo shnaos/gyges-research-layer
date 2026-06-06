@@ -99,6 +99,7 @@ import {
   IsolationEngine,
   BehavioralPrivacyEngine,
   PersonaIsolationEngine,
+  TemporalObfuscationEngine,
   type AgentRuntime,
   type BehavioralPrivacyDecision,
   type BehavioralProfile,
@@ -106,7 +107,9 @@ import {
   type RuntimeLease,
   type SearchPersona,
   type PersonaFragmentBinding,
-  type PersonaCategory
+  type PersonaCategory,
+  type TemporalProfile,
+  type TemporalPrivacyBudget
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -199,10 +202,18 @@ import {
   PersonaBindingsHttpResponse,
   PersonaBindingsByAgentHttpResponse,
   SegmentationPoliciesHttpResponse,
+  TemporalProfilesHttpResponse,
+  TemporalProfileHttpResponse,
+  TemporalBudgetsHttpResponse,
+  TemporalBudgetHttpResponse,
+  TemporalPoliciesHttpResponse,
+  type TemporalObfuscationView,
   type BehavioralProfileView,
   type IdentityFragmentView,
   type SearchPersonaView,
-  type PersonaFragmentBindingView
+  type PersonaFragmentBindingView,
+  type TemporalProfileView,
+  type TemporalBudgetView
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -1021,6 +1032,32 @@ function toPersonaFragmentBindingView(
   };
 }
 
+/** Project a TemporalProfile into its public, secret-free HTTP view. */
+function toTemporalProfileView(profile: TemporalProfile): TemporalProfileView {
+  return {
+    agentId: profile.agentId,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    cadenceRisk: profile.cadenceRisk,
+    recentExecutionTimestamps: [...profile.recentExecutionTimestamps],
+    detectedBursts: profile.detectedBursts,
+    smoothedRequests: profile.smoothedRequests,
+    temporalBudget: toTemporalBudgetView(profile.temporalBudget),
+    currentDelayMs: profile.currentDelayMs
+  };
+}
+
+/** Project a TemporalPrivacyBudget into its public, secret-free HTTP view. */
+function toTemporalBudgetView(budget: TemporalPrivacyBudget): TemporalBudgetView {
+  return {
+    maxRequestsPerWindow: budget.maxRequestsPerWindow,
+    windowMs: budget.windowMs,
+    consumed: budget.consumed,
+    remaining: budget.remaining,
+    resetsAt: budget.resetsAt
+  };
+}
+
 /** Project an {@link AgentRuntime} into its public, secret-free HTTP view. */
 function toAgentRuntimeView(runtime: AgentRuntime): AgentRuntimeView {
   const quota: AgentQuotaView = { ...runtime.quota };
@@ -1315,6 +1352,12 @@ export interface LocalApiOptions {
   /** Persona Isolation Engine (Sprint 25). In-memory, deterministic. */
   personaIsolationEngine?: PersonaIsolationEngine;
   /**
+   * Temporal Obfuscation Engine (Sprint 26). Reduces temporal correlation
+   * fingerprints produced by AI agents (cadence, bursts, budget). In-memory,
+   * deterministic. Never stores tokens, secrets, or raw request input.
+   */
+  temporalObfuscationEngine?: TemporalObfuscationEngine;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1579,6 +1622,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     options.behavioralPrivacyEngine ?? new BehavioralPrivacyEngine();
   const personaIsolationEngine =
     options.personaIsolationEngine ?? new PersonaIsolationEngine();
+  const temporalObfuscationEngine =
+    options.temporalObfuscationEngine ?? new TemporalObfuscationEngine();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2539,6 +2584,100 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // Record the search on the persona (increments searchCount, recomputes risk).
     personaIsolationEngine.recordPersonaSearch(request.agentId, categoryHint);
 
+    // ── Temporal Obfuscation gate (Sprint 26) ──
+    // Evaluates cadence, burst, and budget risk for the agent and emits audit
+    // events. Does NOT block the request — produces delay metadata only.
+    // Records the execution after evaluation so recordExecution reflects the
+    // current request.
+    const temporalDecision = temporalObfuscationEngine.evaluateTemporalRisk(request.agentId);
+    temporalObfuscationEngine.recordExecution({ agentId: request.agentId });
+    const temporalProfile = temporalObfuscationEngine.getProfile(request.agentId)!;
+
+    if (temporalDecision.requiresSchedulingEscalation || temporalDecision.requiresBurstFragmentation) {
+      securityEventEngine.emit({
+        type: 'temporal_scheduling_escalated',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Temporal scheduling escalated due to elevated burst or budget risk.',
+        metadata: {
+          delayMs: temporalDecision.delayMs,
+          cadenceRisk: temporalProfile.cadenceRisk,
+          detectedBursts: temporalProfile.detectedBursts,
+          reason: temporalDecision.reason
+        }
+      });
+    }
+
+    if (temporalDecision.requiresCadenceSmoothing) {
+      securityEventEngine.emit({
+        type: 'cadence_smoothing_applied',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Cadence smoothing applied to reduce temporal pattern risk.',
+        metadata: { delayMs: temporalDecision.delayMs, reason: temporalDecision.reason }
+      });
+    }
+
+    if (temporalDecision.requiresBurstFragmentation) {
+      securityEventEngine.emit({
+        type: 'burst_detected',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Burst pattern detected; fragmentation recommended.',
+        metadata: {
+          detectedBursts: temporalProfile.detectedBursts,
+          reason: temporalDecision.reason
+        }
+      });
+    }
+
+    if (temporalDecision.requiresDelay && temporalDecision.delayMs > 0) {
+      securityEventEngine.emit({
+        type: 'temporal_spacing_applied',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Temporal spacing applied to reduce timing correlation.',
+        metadata: { delayMs: temporalDecision.delayMs, reason: temporalDecision.reason }
+      });
+    }
+
+    if (!temporalDecision.allowed) {
+      securityEventEngine.emit({
+        type: 'temporal_budget_exhausted',
+        severity: 'warning',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        message: 'Temporal privacy budget exhausted for this agent.',
+        metadata: {
+          consumed: temporalProfile.temporalBudget.consumed,
+          maxRequestsPerWindow: temporalProfile.temporalBudget.maxRequestsPerWindow,
+          resetsAt: temporalProfile.temporalBudget.resetsAt
+        }
+      });
+    }
+
+    const temporalObfuscationView: TemporalObfuscationView = {
+      cadenceRisk: temporalProfile.cadenceRisk,
+      delayMs: temporalDecision.delayMs,
+      requiresCadenceSmoothing: temporalDecision.requiresCadenceSmoothing,
+      requiresBurstFragmentation: temporalDecision.requiresBurstFragmentation,
+      requiresSchedulingEscalation: temporalDecision.requiresSchedulingEscalation,
+      detectedBursts: temporalProfile.detectedBursts,
+      smoothedRequests: temporalProfile.smoothedRequests,
+      budgetConsumed: temporalProfile.temporalBudget.consumed,
+      budgetRemaining: temporalProfile.temporalBudget.remaining,
+      reason: temporalDecision.reason
+    };
+
     // Discriminated outcome of applying one non-`allow` defense action.
     type DefenseTerminal =
       | { kind: 'respond'; body: ExecuteMockCapabilityHttpResponse }
@@ -3204,7 +3343,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       capabilityGraph: capabilityGraphView,
       routing: toRoutingDecisionView(routing),
       privacyBoundary: privacyView,
-      execution
+      execution,
+      temporalObfuscation: temporalObfuscationView
     };
     // Surface the sandbox decision (allow or block) when the engine enforced it.
     if (result.sandbox !== undefined) {
@@ -4857,6 +4997,76 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   });
 
+  // ── Sprint 26 — Temporal Obfuscation endpoints ──
+
+  // GET /v1/privacy/temporal/profiles — list all temporal profiles
+  app.get('/v1/privacy/temporal/profiles', (_req, res) => {
+    const profiles = temporalObfuscationEngine.listProfiles().map(toTemporalProfileView);
+    const body: TemporalProfilesHttpResponse = { profiles };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/temporal/profiles', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/temporal/profiles.'
+    });
+  });
+
+  // GET /v1/privacy/temporal/profiles/:agentId — get profile for a specific agent
+  app.get('/v1/privacy/temporal/profiles/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const profile = temporalObfuscationEngine.getProfile(agentId);
+    if (profile === undefined) {
+      return res.status(404).json({ error: `Temporal profile not found: ${agentId}.` });
+    }
+    const body: TemporalProfileHttpResponse = { profile: toTemporalProfileView(profile) };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/temporal/profiles/:agentId', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/temporal/profiles/:agentId.'
+    });
+  });
+
+  // GET /v1/privacy/temporal/budgets — list all temporal budgets
+  app.get('/v1/privacy/temporal/budgets', (_req, res) => {
+    const budgets = temporalObfuscationEngine.budgetManager.listBudgets().map(toTemporalBudgetView);
+    const body: TemporalBudgetsHttpResponse = { budgets };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/temporal/budgets', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/temporal/budgets.'
+    });
+  });
+
+  // GET /v1/privacy/temporal/budgets/:agentId — get budget for a specific agent
+  app.get('/v1/privacy/temporal/budgets/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const budget = toTemporalBudgetView(temporalObfuscationEngine.budgetManager.getBudget(agentId));
+    const body: TemporalBudgetHttpResponse = { agentId, budget };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/temporal/budgets/:agentId', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/temporal/budgets/:agentId.'
+    });
+  });
+
+  // GET /v1/privacy/temporal/policies — current temporal policies
+  app.get('/v1/privacy/temporal/policies', (_req, res) => {
+    const body: TemporalPoliciesHttpResponse = {
+      cadencePolicy: temporalObfuscationEngine.getCadencePolicy(),
+      burstPolicy: temporalObfuscationEngine.getBurstPolicy(),
+      budgetPolicy: temporalObfuscationEngine.getBudgetPolicy()
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/temporal/policies', (_req, res) => {
+    res.status(405).json({
+      error: 'Method not allowed. Use GET /v1/privacy/temporal/policies.'
+    });
+  });
+
   // Expose multi-agent components for test injection / inspection.
   // These are set on the express app instance so integration tests can reach them.
   (app as unknown as Record<string, unknown>)['_agentRegistry'] = agentRegistry;
@@ -4865,6 +5075,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   (app as unknown as Record<string, unknown>)['_agentScheduler'] = agentScheduler;
   (app as unknown as Record<string, unknown>)['_isolationEngine'] = isolationEngine;
   (app as unknown as Record<string, unknown>)['_personaIsolationEngine'] = personaIsolationEngine;
+  (app as unknown as Record<string, unknown>)['_temporalObfuscationEngine'] = temporalObfuscationEngine;
 
   // Unknown routes → 404.
   app.use((_req, res) => {

@@ -91,7 +91,12 @@ export type SecurityEventType =
   | 'persona_rotated'
   | 'persona_isolation_escalated'
   | 'persona_fragment_bound'
-  | 'interest_segmentation_triggered';
+  | 'interest_segmentation_triggered'
+  | 'temporal_spacing_applied'
+  | 'burst_detected'
+  | 'temporal_budget_exhausted'
+  | 'temporal_scheduling_escalated'
+  | 'cadence_smoothing_applied';
 
 /**
  * A single, immutable security event.

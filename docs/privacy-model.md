@@ -15,3 +15,7 @@ See [`docs/behavioral-privacy.md`](./behavioral-privacy.md) for the full Sprint 
 Sprint 25 adds explicit **Persona Isolation** — per-category persona assignment that prevents a single agent from accumulating a unified interest graph across research topics such as crypto, health, finance, and politics.
 
 See [`docs/persona-isolation.md`](./persona-isolation.md) for the full Sprint 25 surface.
+
+Sprint 26 adds **Temporal Obfuscation & Query Scheduling** — a dedicated engine that reduces exploitable timing signatures produced by AI agents: burst patterns, fixed cadence, predictable schedules, and temporal density accumulation. It operates after persona isolation and before the transport layer.
+
+See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Sprint 26 surface.

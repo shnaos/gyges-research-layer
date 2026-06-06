@@ -241,3 +241,12 @@ Events are emitted via the standard `SecurityEventEngine` and are visible at `GE
 - **Local-first**: all state is in-memory, never written to disk or sent to a remote service.
 - **Metadata minimisation**: API responses never include raw queries, user inputs, tokens, or secrets.
 - **Explicit isolation**: isolation is always explicit and observable via audit events — never silent.
+
+
+---
+
+## Sprint 26 extension: Temporal Obfuscation
+
+Sprint 26 adds a dedicated **Temporal Obfuscation & Query Scheduling** engine that operates after persona isolation. It reduces cadence patterns, burst signatures, and temporal density accumulation that persona isolation alone does not address.
+
+See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Sprint 26 surface.

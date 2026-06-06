@@ -245,6 +245,31 @@ See [`docs/persona-isolation.md`](./persona-isolation.md) for full details.
 
 ---
 
+## Temporal Obfuscation (Sprint 26)
+
+The SDK exposes metadata-only temporal obfuscation endpoints (Sprint 26):
+
+```ts
+// List temporal profiles for all agents
+const { profiles } = await client.listTemporalProfiles()
+
+// Get temporal profile for a specific agent
+const { profile } = await client.getTemporalProfile('local-agent')
+
+// List temporal privacy budgets for all agents
+const { budgets } = await client.listTemporalBudgets()
+
+// Get budget for a specific agent
+const { agentId, budget } = await client.getTemporalBudget('local-agent')
+```
+
+These methods return only metadata (cadence risk, burst counts, budget consumption).
+No raw queries, tokens, or secrets are ever returned.
+
+See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for full details.
+
+---
+
 ## Audit events
 
 ```ts

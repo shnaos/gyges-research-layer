@@ -42,7 +42,13 @@ import type {
   WirePersonaBindingsResponse,
   WirePersonaBindingsByAgentResponse,
   SearchPersonaInfo,
-  PersonaFragmentBindingInfo
+  PersonaFragmentBindingInfo,
+  WireTemporalProfilesResponse,
+  WireTemporalProfileResponse,
+  WireTemporalBudgetsResponse,
+  WireTemporalBudgetResponse,
+  TemporalProfileInfo,
+  TemporalBudgetInfo
 } from './types.js';
 import { DEFAULT_SDK_CONFIG } from './types.js';
 
@@ -51,6 +57,9 @@ export { isAllowed, isDenied, isPending };
 
 // Re-export persona types for consumers.
 export type { SearchPersonaInfo, PersonaFragmentBindingInfo };
+
+// Re-export temporal types for consumers.
+export type { TemporalProfileInfo, TemporalBudgetInfo };
 
 // ---------------------------------------------------------------------------
 // Internal wire types — mirror GRL Local API shapes without importing from
@@ -519,6 +528,44 @@ export class GrlAgentClient {
       );
     }
     return this.request<WirePersonaBindingsResponse>('GET', '/v1/privacy/persona-bindings');
+  }
+
+  // -------------------------------------------------------------------------
+  // Temporal Obfuscation (Sprint 26)
+  // -------------------------------------------------------------------------
+
+  /** List all temporal profiles (no raw input, no tokens). */
+  async listTemporalProfiles(): Promise<WireTemporalProfilesResponse> {
+    return this.request<WireTemporalProfilesResponse>('GET', '/v1/privacy/temporal/profiles');
+  }
+
+  /** Get the temporal profile for a specific agent. */
+  async getTemporalProfile(agentId: string): Promise<WireTemporalProfileResponse> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    return this.request<WireTemporalProfileResponse>(
+      'GET',
+      `/v1/privacy/temporal/profiles/${encoded}`
+    );
+  }
+
+  /** List temporal privacy budgets for all agents. */
+  async listTemporalBudgets(): Promise<WireTemporalBudgetsResponse> {
+    return this.request<WireTemporalBudgetsResponse>('GET', '/v1/privacy/temporal/budgets');
+  }
+
+  /** Get the temporal privacy budget for a specific agent. */
+  async getTemporalBudget(agentId: string): Promise<WireTemporalBudgetResponse> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    return this.request<WireTemporalBudgetResponse>(
+      'GET',
+      `/v1/privacy/temporal/budgets/${encoded}`
+    );
   }
 
   // -------------------------------------------------------------------------
