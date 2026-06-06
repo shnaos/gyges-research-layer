@@ -48,7 +48,13 @@ import type {
   WireTemporalBudgetsResponse,
   WireTemporalBudgetResponse,
   TemporalProfileInfo,
-  TemporalBudgetInfo
+  TemporalBudgetInfo,
+  WireFingerprintProfilesResponse,
+  WireFingerprintProfileResponse,
+  WireHeaderProfilesResponse,
+  WireHeaderPoliciesResponse,
+  FingerprintProfileInfo,
+  HeaderProfileInfo
 } from './types.js';
 import { DEFAULT_SDK_CONFIG } from './types.js';
 
@@ -60,6 +66,9 @@ export type { SearchPersonaInfo, PersonaFragmentBindingInfo };
 
 // Re-export temporal types for consumers.
 export type { TemporalProfileInfo, TemporalBudgetInfo };
+
+// Re-export transport fingerprint types for consumers.
+export type { FingerprintProfileInfo, HeaderProfileInfo };
 
 // ---------------------------------------------------------------------------
 // Internal wire types — mirror GRL Local API shapes without importing from
@@ -566,6 +575,30 @@ export class GrlAgentClient {
       'GET',
       `/v1/privacy/temporal/budgets/${encoded}`
     );
+  }
+
+  /** List all transport fingerprint profiles. */
+  async listFingerprintProfiles(): Promise<WireFingerprintProfilesResponse> {
+    return this.request<WireFingerprintProfilesResponse>('GET', '/v1/privacy/fingerprints');
+  }
+
+  /** Get the fingerprint profile for a specific agent. */
+  async getFingerprintProfile(agentId: string): Promise<WireFingerprintProfileResponse> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new GrlAgentSdkError('invalid_arguments', 'agentId must be a non-empty string');
+    }
+    const encoded = encodeURIComponent(agentId);
+    return this.request<WireFingerprintProfileResponse>('GET', `/v1/privacy/fingerprints/${encoded}`);
+  }
+
+  /** List all header profiles. */
+  async listHeaderProfiles(): Promise<WireHeaderProfilesResponse> {
+    return this.request<WireHeaderProfilesResponse>('GET', '/v1/privacy/header-profiles');
+  }
+
+  /** Get the current header isolation policies. */
+  async getHeaderPolicies(): Promise<WireHeaderPoliciesResponse> {
+    return this.request<WireHeaderPoliciesResponse>('GET', '/v1/privacy/header-policies');
   }
 
   // -------------------------------------------------------------------------

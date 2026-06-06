@@ -366,3 +366,18 @@ See [`examples/agent-sdk/`](../examples/agent-sdk/) for runnable examples:
 | `GET` | `/v1/agents/:agentId/trust` | `getAgentTrust()` |
 | `POST` | `/v1/agents/:agentId/restrict` | `restrictAgent()` |
 | `POST` | `/v1/agents/:agentId/evict` | `evictAgent()` |
+
+---
+
+## Transport Fingerprint inspection (Sprint 27)
+
+The SDK exposes metadata-only transport fingerprint endpoints:
+
+```ts
+const { profiles } = await client.listFingerprintProfiles()
+const { profile } = await client.getFingerprintProfile('local-agent')
+const { profiles: headerProfiles } = await client.listHeaderProfiles()
+const { policy } = await client.getHeaderPolicies()
+```
+
+These methods never return raw request input, approval tokens, or secret headers. See [`docs/transport-fingerprint.md`](./transport-fingerprint.md).

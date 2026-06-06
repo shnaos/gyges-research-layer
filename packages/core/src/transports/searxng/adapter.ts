@@ -185,7 +185,9 @@ export class SearXngTransportAdapter implements TransportAdapter {
       try {
         response = await fetch(url, {
           method: 'GET',
-          headers: { Accept: 'application/json' },
+          headers: request.transportHeaders && Object.keys(request.transportHeaders).length > 0
+            ? { ...request.transportHeaders }
+            : { Accept: 'application/json' },
           signal: controller.signal
         });
       } finally {

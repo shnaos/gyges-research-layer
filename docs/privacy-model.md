@@ -19,3 +19,7 @@ See [`docs/persona-isolation.md`](./persona-isolation.md) for the full Sprint 25
 Sprint 26 adds **Temporal Obfuscation & Query Scheduling** — a dedicated engine that reduces exploitable timing signatures produced by AI agents: burst patterns, fixed cadence, predictable schedules, and temporal density accumulation. It operates after persona isolation and before the transport layer.
 
 See [`docs/temporal-obfuscation.md`](./temporal-obfuscation.md) for the full Sprint 26 surface.
+
+Sprint 27 adds **Transport Fingerprint Randomization & Header Isolation** — a deterministic layer that rotates secret-free request metadata such as `User-Agent`, `Accept-Language`, and stable header sets. It reduces trivial transport correlation only; it does **not** guarantee anonymity, defeat advanced fingerprinting, or replace Tor/proxy infrastructure.
+
+See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for the full Sprint 27 surface.

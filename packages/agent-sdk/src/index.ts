@@ -45,5 +45,11 @@ export type {
   AgentLeaseInfo,
   AgentRuntimeInfo,
   AgentTrustInfo,
-  AgentActionResult
+  AgentActionResult,
+  FingerprintProfileInfo,
+  HeaderProfileInfo,
+  WireFingerprintProfilesResponse,
+  WireFingerprintProfileResponse,
+  WireHeaderProfilesResponse,
+  WireHeaderPoliciesResponse
 } from './types.js';

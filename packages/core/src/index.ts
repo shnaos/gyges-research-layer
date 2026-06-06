@@ -81,6 +81,8 @@ export * from './persona-isolation/index.js';
 
 export * from './temporal-obfuscation/index.js';
 
+export * from './transport-fingerprint/index.js';
+
 export {
   ApprovalQueue,
   DEFAULT_APPROVAL_TTL_MS

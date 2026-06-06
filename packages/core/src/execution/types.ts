@@ -68,6 +68,12 @@ export interface ExecutionRequest {
   riskLevel: RiskLevel;
   input: unknown;
   sanitizedInput?: unknown;
+  /**
+   * Optional transport-level headers to inject into the outbound request.
+   * Provided by the TransportFingerprintEngine to reduce trivial header
+   * correlation. Never contains secrets, tokens, or raw input.
+   */
+  transportHeaders?: Record<string, string>;
   session: SessionContext;
 }
 

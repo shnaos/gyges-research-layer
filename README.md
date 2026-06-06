@@ -452,3 +452,14 @@ See [`docs/multi-agent-runtime.md`](docs/multi-agent-runtime.md) for the full re
 
 MIT
 
+## Transport Fingerprint Randomization & Header Isolation (Sprint 27)
+
+Sprint 27 adds deterministic transport fingerprint rotation to reduce trivially stable request metadata:
+
+- rotates `User-Agent` and `Accept-Language` profiles per agent
+- varies safe transport headers and deterministic header ordering
+- exposes metadata-only read APIs, SDK helpers, and CLI commands
+- does **not** guarantee anonymity or prevent advanced fingerprinting
+
+Inspect it locally with `grl privacy fingerprints [agentId]` and `grl privacy header-policies`.
+See [`docs/transport-fingerprint.md`](docs/transport-fingerprint.md).

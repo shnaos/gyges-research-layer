@@ -525,3 +525,26 @@ No raw stack traces are printed by default.
 - `grl runtime reload` requires the server to have been started with `GRL_CONFIG_PATH` pointing to a valid config file; otherwise it returns a 404.
 - No interactive mode, no shell completion, no paging.
 - No auth, no TLS — local loopback only by design.
+
+---
+
+### `grl privacy fingerprints [agentId]`
+
+List transport fingerprint profiles for all agents or a single agent (Sprint 27).
+
+```bash
+grl privacy fingerprints
+grl privacy fingerprints local-agent
+```
+
+---
+
+### `grl privacy header-policies`
+
+Show the active transport header-isolation policy (Sprint 27).
+
+```bash
+grl privacy header-policies
+```
+
+See [`docs/transport-fingerprint.md`](./transport-fingerprint.md) for details.

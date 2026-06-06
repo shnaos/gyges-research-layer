@@ -240,3 +240,76 @@ export async function runPrivacyBudgets(
     }))
   )
 }
+
+
+// Sprint 27 — Transport Fingerprint CLI commands
+
+export async function runPrivacyFingerprints(
+  agentId: string | undefined,
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  if (agentId !== undefined) {
+    const result = await client.getFingerprintProfile(agentId).catch((err: unknown) => {
+      if (err instanceof CliError && err.code === 'command_failed') {
+        throw new CliError('command_failed', `Fingerprint profile not found: ${agentId}`)
+      }
+      throw err
+    })
+    if (config.output === 'json') {
+      printJson(result)
+      return
+    }
+    const p = result.profile
+    printKeyValue([
+      ['agentId', p.agentId],
+      ['activeFingerprintId', p.activeFingerprintId],
+      ['correlationRisk', p.correlationRisk],
+      ['rotationCount', String(p.rotationCount)],
+      ['requestCount', String(p.requestCount)],
+      ['assignedUserAgent', p.assignedUserAgent],
+      ['assignedLanguage', p.assignedLanguage],
+      ['updatedAt', new Date(p.updatedAt).toISOString()]
+    ])
+    return
+  }
+  const result = await client.listFingerprintProfiles()
+  if (config.output === 'json') {
+    printJson(result)
+    return
+  }
+  printTable(
+    [
+      { header: 'AGENT_ID', key: 'agentId' },
+      { header: 'FINGERPRINT_ID', key: 'activeFingerprintId' },
+      { header: 'RISK', key: 'correlationRisk' },
+      { header: 'ROTATIONS', key: 'rotationCount' },
+      { header: 'REQUESTS', key: 'requestCount' },
+      { header: 'USER_AGENT', key: 'assignedUserAgent' }
+    ],
+    result.profiles.map((p) => ({
+      ...p,
+      rotationCount: String(p.rotationCount),
+      requestCount: String(p.requestCount)
+    }))
+  )
+}
+
+export async function runPrivacyHeaderPolicies(
+  client: GrlApiClient,
+  config: GrlCliConfig
+): Promise<void> {
+  const result = await client.getHeaderPolicies()
+  if (config.output === 'json') {
+    printJson(result)
+    return
+  }
+  const p = result.policy
+  printKeyValue([
+    ['enabled', String(p.enabled)],
+    ['rotateOnPersonaChange', String(p.rotateOnPersonaChange)],
+    ['rotateOnTemporalEscalation', String(p.rotateOnTemporalEscalation)],
+    ['maxRequestsPerFingerprint', String(p.maxRequestsPerFingerprint)],
+    ['strictSensitiveCategoryIsolation', String(p.strictSensitiveCategoryIsolation)]
+  ])
+}

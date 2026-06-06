@@ -100,6 +100,7 @@ import {
   BehavioralPrivacyEngine,
   PersonaIsolationEngine,
   TemporalObfuscationEngine,
+  TransportFingerprintEngine,
   type AgentRuntime,
   type BehavioralPrivacyDecision,
   type BehavioralProfile,
@@ -109,7 +110,9 @@ import {
   type PersonaFragmentBinding,
   type PersonaCategory,
   type TemporalProfile,
-  type TemporalPrivacyBudget
+  type TemporalPrivacyBudget,
+  type FingerprintProfile,
+  type HeaderIsolationPolicy
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -207,8 +210,14 @@ import {
   TemporalBudgetsHttpResponse,
   TemporalBudgetHttpResponse,
   TemporalPoliciesHttpResponse,
+  FingerprintProfilesHttpResponse,
+  FingerprintProfileHttpResponse,
+  HeaderProfilesHttpResponse,
+  HeaderPoliciesHttpResponse,
   type TemporalObfuscationView,
   type BehavioralProfileView,
+  type FingerprintProfileView,
+  type HeaderProfileView,
   type IdentityFragmentView,
   type SearchPersonaView,
   type PersonaFragmentBindingView,
@@ -670,7 +679,22 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'behavior_fragment_rotated',
   'behavior_correlation_detected',
   'behavioral_jitter_applied',
-  'behavioral_privacy_escalated'
+  'behavioral_privacy_escalated',
+  'persona_created',
+  'persona_rotated',
+  'persona_isolation_escalated',
+  'persona_fragment_bound',
+  'interest_segmentation_triggered',
+  'temporal_spacing_applied',
+  'burst_detected',
+  'temporal_budget_exhausted',
+  'temporal_scheduling_escalated',
+  'cadence_smoothing_applied',
+  'fingerprint_assigned',
+  'fingerprint_rotated',
+  'header_isolation_applied',
+  'language_isolation_applied',
+  'user_agent_rotated'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -1058,6 +1082,38 @@ function toTemporalBudgetView(budget: TemporalPrivacyBudget): TemporalBudgetView
   };
 }
 
+function toFingerprintProfileView(p: FingerprintProfile): FingerprintProfileView {
+  return {
+    agentId: p.agentId,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    activeFingerprintId: p.activeFingerprintId,
+    rotationCount: p.rotationCount,
+    requestCount: p.requestCount,
+    correlationRisk: p.correlationRisk,
+    assignedUserAgent: p.assignedUserAgent,
+    assignedLanguage: p.assignedLanguage
+  };
+}
+
+function extractPersonaCategory(input: unknown): PersonaCategory {
+  const rawCategoryHint =
+    typeof input === 'object' && input !== null && !Array.isArray(input) &&
+    'categoryHint' in (input as Record<string, unknown>)
+      ? (input as Record<string, unknown>)['categoryHint']
+      : undefined;
+  const validCategories: readonly PersonaCategory[] = [
+    'general', 'finance', 'crypto', 'security', 'health', 'politics', 'development', 'research', 'unknown'
+  ];
+  return typeof rawCategoryHint === 'string' && validCategories.includes(rawCategoryHint as PersonaCategory)
+    ? (rawCategoryHint as PersonaCategory)
+    : 'unknown';
+}
+
+function isSensitivePersonaCategory(category: PersonaCategory): boolean {
+  return ['finance', 'crypto', 'security', 'health', 'politics'].includes(category);
+}
+
 /** Project an {@link AgentRuntime} into its public, secret-free HTTP view. */
 function toAgentRuntimeView(runtime: AgentRuntime): AgentRuntimeView {
   const quota: AgentQuotaView = { ...runtime.quota };
@@ -1357,6 +1413,8 @@ export interface LocalApiOptions {
    * deterministic. Never stores tokens, secrets, or raw request input.
    */
   temporalObfuscationEngine?: TemporalObfuscationEngine;
+  /** Transport Fingerprint Engine (Sprint 27). */
+  transportFingerprintEngine?: TransportFingerprintEngine;
   /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
@@ -1624,6 +1682,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     options.personaIsolationEngine ?? new PersonaIsolationEngine();
   const temporalObfuscationEngine =
     options.temporalObfuscationEngine ?? new TemporalObfuscationEngine();
+  const transportFingerprintEngine =
+    options.transportFingerprintEngine ?? new TransportFingerprintEngine();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2050,6 +2110,110 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       }
     }
     return event;
+  };
+
+  const applyTransportFingerprint = (input: {
+    agentId: string;
+    compartmentId: string;
+    requestId: string;
+    personaChanged?: boolean;
+    temporalEscalation?: boolean;
+    sensitiveCategoryDetected?: boolean;
+  }): {
+    decision: ReturnType<TransportFingerprintEngine['evaluateIsolation']>;
+    profile: FingerprintProfile;
+    rotated: boolean;
+  } => {
+    const decision = transportFingerprintEngine.evaluateIsolation({
+      agentId: input.agentId,
+      personaChanged: input.personaChanged,
+      temporalEscalation: input.temporalEscalation,
+      sensitiveCategoryDetected: input.sensitiveCategoryDetected
+    });
+
+    let rotated = false;
+    if (decision.requiresRotation) {
+      rotated = true;
+      const rotatedProfile = transportFingerprintEngine.rotateFingerprint(input.agentId);
+      securityEventEngine.emit({
+        type: 'fingerprint_rotated',
+        severity: 'info',
+        agentId: input.agentId,
+        compartmentId: input.compartmentId,
+        requestId: input.requestId,
+        message: 'Transport fingerprint rotated.',
+        metadata: {
+          activeFingerprintId: rotatedProfile.activeFingerprintId,
+          rotationCount: rotatedProfile.rotationCount,
+          correlationRisk: rotatedProfile.correlationRisk,
+          reason: decision.reason
+        }
+      });
+      securityEventEngine.emit({
+        type: 'user_agent_rotated',
+        severity: 'info',
+        agentId: input.agentId,
+        compartmentId: input.compartmentId,
+        requestId: input.requestId,
+        message: 'Transport User-Agent rotated.',
+        metadata: {
+          activeFingerprintId: rotatedProfile.activeFingerprintId,
+          rotationCount: rotatedProfile.rotationCount,
+          userAgent: rotatedProfile.assignedUserAgent,
+          reason: decision.reason
+        }
+      });
+      securityEventEngine.emit({
+        type: 'language_isolation_applied',
+        severity: 'info',
+        agentId: input.agentId,
+        compartmentId: input.compartmentId,
+        requestId: input.requestId,
+        message: 'Transport language isolation applied.',
+        metadata: {
+          activeFingerprintId: rotatedProfile.activeFingerprintId,
+          rotationCount: rotatedProfile.rotationCount,
+          acceptLanguage: rotatedProfile.assignedLanguage,
+          reason: decision.reason
+        }
+      });
+    }
+
+    const profile = transportFingerprintEngine.assignFingerprint({ agentId: input.agentId });
+    securityEventEngine.emit({
+      type: 'fingerprint_assigned',
+      severity: 'info',
+      agentId: input.agentId,
+      compartmentId: input.compartmentId,
+      requestId: input.requestId,
+      message: 'Transport fingerprint assigned.',
+      metadata: {
+        activeFingerprintId: profile.activeFingerprintId,
+        rotationCount: profile.rotationCount,
+        requestCount: profile.requestCount,
+        correlationRisk: profile.correlationRisk,
+        reason: decision.reason
+      }
+    });
+
+    if (decision.requiresHeaderIsolation) {
+      securityEventEngine.emit({
+        type: 'header_isolation_applied',
+        severity: 'info',
+        agentId: input.agentId,
+        compartmentId: input.compartmentId,
+        requestId: input.requestId,
+        message: 'Transport header isolation applied.',
+        metadata: {
+          activeFingerprintId: profile.activeFingerprintId,
+          rotationCount: profile.rotationCount,
+          correlationRisk: profile.correlationRisk,
+          reason: decision.reason
+        }
+      });
+    }
+
+    return { decision, profile, rotated };
   };
 
   const app = express();
@@ -2678,6 +2842,15 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       reason: temporalDecision.reason
     };
 
+    const fingerprintState = applyTransportFingerprint({
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      personaChanged: isolationDecision.requiresNewFragment,
+      temporalEscalation: temporalDecision.requiresSchedulingEscalation,
+      sensitiveCategoryDetected: isSensitivePersonaCategory(categoryHint)
+    });
+
     // Discriminated outcome of applying one non-`allow` defense action.
     type DefenseTerminal =
       | { kind: 'respond'; body: ExecuteMockCapabilityHttpResponse }
@@ -3185,6 +3358,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       riskLevel: request.riskLevel as RiskLevel,
       input: request.input,
       sanitizedInput: decision.sanitizedInput,
+      transportHeaders: { ...fingerprintState.profile.assignedHeaders },
       session: {
         ...sessionManager.toSessionContext(session),
         transportKind: routing.transportKind
@@ -3344,7 +3518,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       routing: toRoutingDecisionView(routing),
       privacyBoundary: privacyView,
       execution,
-      temporalObfuscation: temporalObfuscationView
+      temporalObfuscation: temporalObfuscationView,
+      fingerprint: {
+        activeFingerprintId: fingerprintState.profile.activeFingerprintId,
+        rotationCount: fingerprintState.profile.rotationCount,
+        correlationRisk: fingerprintState.profile.correlationRisk,
+        rotated: fingerprintState.rotated
+      }
     };
     // Surface the sandbox decision (allow or block) when the engine enforced it.
     if (result.sandbox !== undefined) {
@@ -3393,6 +3573,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const { request } = validated;
     const requestId = randomUUID();
     const inputDescriptor = describeInput(request.input);
+    const categoryHint = extractPersonaCategory(request.input);
 
     let defenseView: DefenseDecisionView | undefined;
 
@@ -3856,6 +4037,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
     }
 
+    const fingerprintStateExec = applyTransportFingerprint({
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      sensitiveCategoryDetected: isSensitivePersonaCategory(categoryHint)
+    });
+
     // ── Session ──────────────────────────────────────────────────────────────
     const mustRotateExec = routingExec.shouldRotateSession || privacyExec.action === 'rotate_session' || graphForcesRotation;
     const sessionsBefore2 = sessionManager.size();
@@ -3878,6 +4066,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       riskLevel: request.riskLevel as RiskLevel,
       input: request.input,
       sanitizedInput: decisionExec.sanitizedInput,
+      transportHeaders: { ...fingerprintStateExec.profile.assignedHeaders },
       session: { ...sessionManager.toSessionContext(sessionExec), transportKind: resolvedKind }
     };
 
@@ -3991,7 +4180,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       capabilityGraph: capabilityGraphView,
       routing: toRoutingDecisionView(routingExec),
       privacyBoundary: privacyViewExec,
-      execution: executionViewExec
+      execution: executionViewExec,
+      fingerprint: {
+        activeFingerprintId: fingerprintStateExec.profile.activeFingerprintId,
+        rotationCount: fingerprintStateExec.profile.rotationCount,
+        correlationRisk: fingerprintStateExec.profile.correlationRisk,
+        rotated: fingerprintStateExec.rotated
+      }
     };
     if (resultExec.sandbox !== undefined) response.sandbox = toSandboxDecisionView(resultExec.sandbox);
     if (defenseView !== undefined) response.defense = defenseView;
@@ -5067,6 +5262,60 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   });
 
+  // GET /v1/privacy/fingerprints
+  app.get('/v1/privacy/fingerprints', (_req, res) => {
+    const profiles = transportFingerprintEngine.listProfiles().map(toFingerprintProfileView);
+    const body: FingerprintProfilesHttpResponse = { profiles };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/fingerprints', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/fingerprints.' });
+  });
+
+  // GET /v1/privacy/fingerprints/:agentId
+  app.get('/v1/privacy/fingerprints/:agentId', (req, res) => {
+    const { agentId } = req.params;
+    const profile = transportFingerprintEngine.getProfile(agentId);
+    if (!profile) {
+      return res.status(404).json({ error: `Fingerprint profile not found: ${agentId}` });
+    }
+    const body: FingerprintProfileHttpResponse = {
+      agentId,
+      profile: toFingerprintProfileView(profile)
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/fingerprints/:agentId', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/fingerprints/:agentId.' });
+  });
+
+  // GET /v1/privacy/header-policies
+  app.get('/v1/privacy/header-policies', (_req, res) => {
+    const policy: HeaderIsolationPolicy = transportFingerprintEngine.getPolicy();
+    const body: HeaderPoliciesHttpResponse = { policy };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/header-policies', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/header-policies.' });
+  });
+
+  // GET /v1/privacy/header-profiles
+  app.get('/v1/privacy/header-profiles', (_req, res) => {
+    const raw = transportFingerprintEngine.listHeaderProfiles();
+    const profiles: HeaderProfileView[] = raw.map((p) => ({
+      id: p.id,
+      userAgent: p.userAgent,
+      acceptLanguage: p.acceptLanguage,
+      createdAt: p.createdAt,
+      active: p.active
+    }));
+    const body: HeaderProfilesHttpResponse = { profiles };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/privacy/header-profiles', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/privacy/header-profiles.' });
+  });
+
   // Expose multi-agent components for test injection / inspection.
   // These are set on the express app instance so integration tests can reach them.
   (app as unknown as Record<string, unknown>)['_agentRegistry'] = agentRegistry;
@@ -5076,6 +5325,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   (app as unknown as Record<string, unknown>)['_isolationEngine'] = isolationEngine;
   (app as unknown as Record<string, unknown>)['_personaIsolationEngine'] = personaIsolationEngine;
   (app as unknown as Record<string, unknown>)['_temporalObfuscationEngine'] = temporalObfuscationEngine;
+  (app as unknown as Record<string, unknown>)['_transportFingerprintEngine'] = transportFingerprintEngine;
 
   // Unknown routes → 404.
   app.use((_req, res) => {
