@@ -27,6 +27,7 @@ export type PolicySignalSource =
   | 'persona_isolation'
   | 'temporal_obfuscation'
   | 'transport_fingerprint'
+  | 'network_isolation'
   | 'trust_reputation'
   | 'adaptive_defense'
   | 'capability_firewall'
@@ -41,6 +42,7 @@ export type UnifiedPrivacyAction =
   | 'rotate_session'
   | 'rotate_fragment'
   | 'rotate_fingerprint'
+  | 'rotate_identity'
   | 'require_approval'
   | 'cooldown'
   | 'temporary_block'
@@ -194,6 +196,8 @@ export interface CompositeRuntimeDecision {
   requiresFragmentRotation: boolean;
   /** Whether a transport fingerprint rotation is required. */
   requiresFingerprintRotation: boolean;
+  /** Whether a full network identity (relay route) rotation is required. */
+  requiresIdentityRotation: boolean;
   /**
    * Human-readable explanation of how the final action was selected.
    *

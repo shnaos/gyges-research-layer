@@ -217,6 +217,7 @@ export async function runRuntimePolicyLastDecision(
     ['requires_session_rotation', d.requiresSessionRotation],
     ['requires_fragment_rotation', d.requiresFragmentRotation],
     ['requires_fingerprint_rotation', d.requiresFingerprintRotation],
+    ['requires_identity_rotation', d.requiresIdentityRotation ?? false],
     ['reason', d.reason],
     ['signal_count', d.signals.length],
     ['conflict_count', d.conflicts.length]

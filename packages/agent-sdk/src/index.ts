@@ -16,6 +16,15 @@ export type {
   PolicySignalSeverity
 } from './client.js';
 
+// Network isolation (Sprint 30)
+export type {
+  NetworkListFilters,
+  WireRelayProfileView,
+  WireRelayRouteView,
+  WireNetworkBindingView,
+  WireNetworkIsolationResponse
+} from './client.js';
+
 // Type guards / helpers
 export { isAllowed, isDenied, isPending } from './search.js';
 

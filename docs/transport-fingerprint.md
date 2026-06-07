@@ -48,3 +48,19 @@ Only metadata is returned publicly. Header values are used in-memory for executi
 Sprint 28 adds a central arbitration layer above the transport fingerprint engine. Transport fingerprint isolation now also emits a `PolicySignal` with `source: 'transport_fingerprint'` for each execute-mock request. The `RuntimePolicyOrchestrator` aggregates this signal alongside signals from all other gates to produce a single `CompositeRuntimeDecision`.
 
 See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md) for details.
+
+## Sprint 30 relationship: Network Isolation
+
+Transport fingerprint randomization reduces *trivially stable request metadata*
+(User-Agent, Accept-Language, header ordering). It is **distinct from** and
+**complementary to** the Sprint 30 [Network Isolation layer](./network-isolation.md),
+which reduces *network-route* correlation by binding each compartment to an
+isolated logical relay route and rotating it deterministically. In the execute
+pipeline the network-isolation gate runs **before** fingerprint isolation:
+
+```
+… → network isolation → transport policy → transport fingerprint → sandbox → SearXNG
+```
+
+Neither layer promises anonymity, invisibility, anti-forensics, or anti-detection;
+both are logical/runtime correlation-reduction layers only.

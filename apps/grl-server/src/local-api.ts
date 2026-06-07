@@ -115,7 +115,10 @@ import {
   type HeaderIsolationPolicy,
   RuntimePolicyOrchestrator,
   PolicySignalCollector,
-  type CompositeRuntimeDecision
+  type CompositeRuntimeDecision,
+  NetworkIsolationEngine,
+  type RouteSelectionDecision,
+  type IsolationContext
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -232,7 +235,15 @@ import {
   type CompositePrivacyPolicyView,
   type PolicyOrchestratorPoliciesHttpResponse,
   type PolicyOrchestratorSignalsHttpResponse,
-  type PolicyOrchestratorLastDecisionHttpResponse
+  type PolicyOrchestratorLastDecisionHttpResponse,
+  type RelayProfileView,
+  type RelayRouteView,
+  type NetworkCompartmentBindingView,
+  type NetworkIsolationDecisionView,
+  type NetworkRelaysHttpResponse,
+  type NetworkRoutesHttpResponse,
+  type NetworkBindingsHttpResponse,
+  type NetworkIsolationHttpResponse
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -708,7 +719,11 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'runtime_policy_evaluated',
   'runtime_policy_conflict_detected',
   'runtime_policy_decision_applied',
-  'runtime_policy_signal_evicted'
+  'runtime_policy_signal_evicted',
+  'relay_route_assigned',
+  'relay_route_rotated',
+  'network_isolation_enforced',
+  'network_isolation_denied'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -725,23 +740,23 @@ export const VALID_EVENT_SEVERITIES: readonly EventSeverity[] = [
 // is rejected fail-closed (HTTP 400) rather than silently ignored.
 type PolicySignalSourceValue =
   | 'capability_graph' | 'multi_agent' | 'behavioral_privacy' | 'persona_isolation'
-  | 'temporal_obfuscation' | 'transport_fingerprint' | 'trust_reputation'
-  | 'adaptive_defense' | 'capability_firewall' | 'privacy_boundary'
-  | 'transport_policy' | 'sandbox';
+  | 'temporal_obfuscation' | 'transport_fingerprint' | 'network_isolation'
+  | 'trust_reputation' | 'adaptive_defense' | 'capability_firewall'
+  | 'privacy_boundary' | 'transport_policy' | 'sandbox';
 type UnifiedPrivacyActionValue =
   | 'allow' | 'delay' | 'rotate_session' | 'rotate_fragment' | 'rotate_fingerprint'
-  | 'require_approval' | 'cooldown' | 'temporary_block' | 'deny';
+  | 'rotate_identity' | 'require_approval' | 'cooldown' | 'temporary_block' | 'deny';
 type PolicySignalSeverityValue = 'info' | 'low' | 'medium' | 'high' | 'critical';
 
 export const VALID_POLICY_SIGNAL_SOURCES: readonly PolicySignalSourceValue[] = [
   'capability_graph', 'multi_agent', 'behavioral_privacy', 'persona_isolation',
-  'temporal_obfuscation', 'transport_fingerprint', 'trust_reputation',
-  'adaptive_defense', 'capability_firewall', 'privacy_boundary',
-  'transport_policy', 'sandbox'
+  'temporal_obfuscation', 'transport_fingerprint', 'network_isolation',
+  'trust_reputation', 'adaptive_defense', 'capability_firewall',
+  'privacy_boundary', 'transport_policy', 'sandbox'
 ];
 export const VALID_UNIFIED_PRIVACY_ACTIONS: readonly UnifiedPrivacyActionValue[] = [
   'allow', 'delay', 'rotate_session', 'rotate_fragment', 'rotate_fingerprint',
-  'require_approval', 'cooldown', 'temporary_block', 'deny'
+  'rotate_identity', 'require_approval', 'cooldown', 'temporary_block', 'deny'
 ];
 export const VALID_POLICY_SIGNAL_SEVERITIES: readonly PolicySignalSeverityValue[] = [
   'info', 'low', 'medium', 'high', 'critical'
@@ -1148,6 +1163,7 @@ function toRuntimePolicyDecisionView(d: CompositeRuntimeDecision): CompositeRunt
     requiresSessionRotation: d.requiresSessionRotation,
     requiresFragmentRotation: d.requiresFragmentRotation,
     requiresFingerprintRotation: d.requiresFingerprintRotation,
+    requiresIdentityRotation: d.requiresIdentityRotation,
     reason: d.reason,
     signals: d.signals.map((s): PolicySignalView => ({
       id: s.id,
@@ -1167,6 +1183,23 @@ function toRuntimePolicyDecisionView(d: CompositeRuntimeDecision): CompositeRunt
     }))
   };
   if (d.delayMs !== undefined) view.delayMs = d.delayMs;
+  return view;
+}
+
+/**
+ * Convert a RouteSelectionDecision to its public HTTP view. Metadata only —
+ * carries an opaque relay/route id and the isolation level, NEVER a host, IP,
+ * URL, DNS name, endpoint, or credential.
+ */
+function toNetworkIsolationView(d: RouteSelectionDecision): NetworkIsolationDecisionView {
+  const view: NetworkIsolationDecisionView = {
+    allowed: d.allowed,
+    isolationLevel: d.isolationLevel,
+    shouldRotate: d.shouldRotate,
+    reason: d.reason
+  };
+  if (d.relayProfileId !== undefined) view.relayProfileId = d.relayProfileId;
+  if (d.relayRouteId !== undefined) view.relayRouteId = d.relayRouteId;
   return view;
 }
 
@@ -1512,6 +1545,13 @@ export interface LocalApiOptions {
    */
   runtimePolicyOrchestrator?: RuntimePolicyOrchestrator;
   /**
+   * Network Isolation Engine (Sprint 30). Assigns each compartment a stable
+   * logical relay route, rotates routes on persona/category/risk changes, and
+   * produces fail-closed route-selection decisions. Metadata only — no real
+   * Tor/proxy/VPN/DNS, and no host/IP/URL/credential is ever stored.
+   */
+  networkIsolationEngine?: NetworkIsolationEngine;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1786,6 +1826,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   // fail-closed. Never stores tokens, secrets, or raw request input.
   const runtimePolicyOrchestrator =
     options.runtimePolicyOrchestrator ?? new RuntimePolicyOrchestrator();
+
+  // Sprint 30 — Network Isolation Engine. Logical relay/route abstraction only;
+  // metadata-minimizing, deterministic, fail-closed. No real Tor/proxy/VPN/DNS,
+  // no host/IP/URL/credential stored.
+  const networkIsolationEngine =
+    options.networkIsolationEngine ?? new NetworkIsolationEngine();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2393,24 +2439,126 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   // runtimePolicy evaluated from exactly the signals collected up to that point.
   // Protocol-error responses (400 content-type/validation, which carry `error`
   // and no `decision`, and the 405 handlers on separate routes) are left raw.
+  //
+  // Sprint 30 — the same interceptor injects the per-request `networkIsolation`
+  // block when the network-isolation gate has produced one (held in a mutable
+  // `augment` ref so paths that respond after the gate carry it; early
+  // short-circuit denials before the gate simply omit it — it is optional).
   const installRuntimePolicyInjection = (
     res: ExpressResponse,
     collector: PolicySignalCollector,
-    ctx: { agentId?: string; compartmentId?: string; requestId?: string }
+    ctx: { agentId?: string; compartmentId?: string; requestId?: string },
+    augment?: { networkIsolation?: NetworkIsolationDecisionView }
   ): void => {
     const originalJson = res.json.bind(res);
     res.json = ((body: unknown): ExpressResponse => {
       if (
         body !== null &&
         typeof body === 'object' &&
-        'decision' in body &&
-        (body as { runtimePolicy?: unknown }).runtimePolicy === undefined
+        'decision' in body
       ) {
-        (body as { runtimePolicy?: CompositeRuntimeDecisionView }).runtimePolicy =
-          finalizeRuntimePolicy(collector, ctx);
+        const decisionBody = body as {
+          runtimePolicy?: CompositeRuntimeDecisionView;
+          networkIsolation?: NetworkIsolationDecisionView;
+        };
+        if (
+          augment?.networkIsolation !== undefined &&
+          decisionBody.networkIsolation === undefined
+        ) {
+          decisionBody.networkIsolation = augment.networkIsolation;
+        }
+        // runtimePolicy is finalised LAST so the network_isolation signal emitted
+        // by the gate is included in the composite decision.
+        if (decisionBody.runtimePolicy === undefined) {
+          decisionBody.runtimePolicy = finalizeRuntimePolicy(collector, ctx);
+        }
       }
       return originalJson(body);
     }) as ExpressResponse['json'];
+  };
+
+  // ── Sprint 30 — Network isolation gate & signals ──
+  //
+  // Emits `network_isolation` policy signals and relay/network audit events from
+  // the NetworkIsolationEngine. Metadata only — no host/IP/URL/DNS/credential.
+  // Fail-closed: a denied route-selection decision denies the request.
+  type NetworkIsolationOutcome =
+    | { kind: 'continue'; view: NetworkIsolationDecisionView }
+    | { kind: 'deny'; reason: string; view: NetworkIsolationDecisionView };
+  const evaluateNetworkIsolationGate = (
+    collector: PolicySignalCollector,
+    ctx: { agentId: string; compartmentId: string; requestId: string },
+    isolationContext: IsolationContext
+  ): NetworkIsolationOutcome => {
+    const hadBinding = networkIsolationEngine.getBinding(ctx.compartmentId) !== undefined;
+    const decision = networkIsolationEngine.evaluateIsolation(isolationContext);
+    const view = toNetworkIsolationView(decision);
+
+    if (!decision.allowed) {
+      collector.emit({
+        source: 'network_isolation',
+        action: 'deny',
+        severity: 'critical',
+        reason: decision.reason
+      });
+      securityEventEngine.emit({
+        type: 'network_isolation_denied',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Network isolation denied the request (fail-closed).',
+        metadata: { isolationLevel: decision.isolationLevel }
+      });
+      return { kind: 'deny', reason: decision.reason, view };
+    }
+
+    if (decision.shouldRotate) {
+      collector.emit({
+        source: 'network_isolation',
+        action: 'rotate_identity',
+        severity: 'medium',
+        reason: decision.reason
+      });
+      securityEventEngine.emit({
+        type: 'relay_route_rotated',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Relay route rotated.',
+        metadata: { relayRouteId: decision.relayRouteId, isolationLevel: decision.isolationLevel }
+      });
+    } else {
+      if (!hadBinding) {
+        securityEventEngine.emit({
+          type: 'relay_route_assigned',
+          severity: 'info',
+          agentId: ctx.agentId,
+          compartmentId: ctx.compartmentId,
+          requestId: ctx.requestId,
+          message: 'Relay route assigned.',
+          metadata: { relayRouteId: decision.relayRouteId, isolationLevel: decision.isolationLevel }
+        });
+      }
+      collector.emit({
+        source: 'network_isolation',
+        action: 'allow',
+        severity: 'info',
+        reason: decision.reason
+      });
+    }
+
+    securityEventEngine.emit({
+      type: 'network_isolation_enforced',
+      severity: 'info',
+      agentId: ctx.agentId,
+      compartmentId: ctx.compartmentId,
+      requestId: ctx.requestId,
+      message: 'Network isolation enforced.',
+      metadata: { isolationLevel: decision.isolationLevel, shouldRotate: decision.shouldRotate }
+    });
+    return { kind: 'continue', view };
   };
 
   // ── Sprint 29 — Multi-agent runtime gate & signals ──
@@ -2676,11 +2824,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // signal into this collector; the response interceptor evaluates them into a
     // single composite runtimePolicy decision on whichever path responds.
     const collector = new PolicySignalCollector(runtimePolicyOrchestrator);
-    installRuntimePolicyInjection(res, collector, {
-      agentId: request.agentId,
-      compartmentId: request.compartmentId,
-      requestId
-    });
+    const networkAugment: { networkIsolation?: NetworkIsolationDecisionView } = {};
+    installRuntimePolicyInjection(
+      res,
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      networkAugment
+    );
 
     // Defense annotation attached to the final response when a risk escalation
     // lets the request continue. Terminal defense actions build and return their
@@ -3682,6 +3832,23 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       reason: decision.reason
     });
 
+    // ── Network Isolation gate (Sprint 30) — logical relay/route isolation ──
+    const networkOutcome = evaluateNetworkIsolationGate(
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      { compartmentId: request.compartmentId, personaId: categoryHint ?? undefined }
+    );
+    networkAugment.networkIsolation = networkOutcome.view;
+    if (networkOutcome.kind === 'deny') {
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: networkOutcome.reason,
+        capabilityGraph: capabilityGraphView
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
+
     // Allowed without confirmation: resolve the routing decision FIRST (the
     // Transport Policy Engine consults only tool + riskLevel and never touches
     // sessions), then select a session identity per that decision, then run it
@@ -4161,11 +4328,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // composite runtimePolicy block injected on every decision path, including
     // when a gate short-circuits before SearXNG/mock execution.
     const collector = new PolicySignalCollector(runtimePolicyOrchestrator);
-    installRuntimePolicyInjection(res, collector, {
-      agentId: request.agentId,
-      compartmentId: request.compartmentId,
-      requestId
-    });
+    const networkAugment: { networkIsolation?: NetworkIsolationDecisionView } = {};
+    installRuntimePolicyInjection(
+      res,
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      networkAugment
+    );
 
     let defenseView: DefenseDecisionView | undefined;
 
@@ -4538,6 +4707,23 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
     });
     collector.emit({ source: 'capability_firewall', action: 'allow', severity: 'info', reason: decisionExec.reason });
+
+    // ── Network Isolation gate (Sprint 30) — logical relay/route isolation ──
+    const networkOutcome = evaluateNetworkIsolationGate(
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      { compartmentId: request.compartmentId, personaId: categoryHint ?? undefined }
+    );
+    networkAugment.networkIsolation = networkOutcome.view;
+    if (networkOutcome.kind === 'deny') {
+      const response: ExecuteCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: networkOutcome.reason,
+        capabilityGraph: capabilityGraphView
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
 
     // ── Routing ──────────────────────────────────────────────────────────────
     let routingExec: RoutingDecision;
@@ -5992,6 +6178,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   (app as unknown as Record<string, unknown>)['_temporalObfuscationEngine'] = temporalObfuscationEngine;
   (app as unknown as Record<string, unknown>)['_transportFingerprintEngine'] = transportFingerprintEngine;
   (app as unknown as Record<string, unknown>)['_runtimePolicyOrchestrator'] = runtimePolicyOrchestrator;
+  (app as unknown as Record<string, unknown>)['_networkIsolationEngine'] = networkIsolationEngine;
 
   // ── Sprint 28 — Runtime Policy Orchestrator endpoints ──
   // Metadata only: policies, accumulated signals, last composite decision.
@@ -6096,6 +6283,113 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res.status(405).json({
       error: 'Method not allowed. Use GET /v1/runtime/policy-orchestrator/last-decision.'
     });
+  });
+
+  // ── Sprint 30 — Network Isolation read endpoints ──
+  //
+  // Metadata only. These NEVER expose a host, IP, URL, DNS name, endpoint,
+  // credential, token, or raw input — only opaque relay/route ids and
+  // structural isolation metadata.
+  const readNetworkLimit = (raw: unknown): number | undefined | null => {
+    if (raw === undefined) return undefined;
+    const value = Array.isArray(raw) ? String(raw[raw.length - 1]) : String(raw);
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) return null; // sentinel: invalid
+    return parsed;
+  };
+
+  // GET /v1/network/relays — list registered relay profiles.
+  app.get('/v1/network/relays', (req, res) => {
+    const limit = readNetworkLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'Invalid limit. Must be a positive integer.' });
+    }
+    const relays: RelayProfileView[] = networkIsolationEngine
+      .listRelayProfiles(limit)
+      .map((p): RelayProfileView => ({
+        id: p.id,
+        name: p.name,
+        enabled: p.enabled,
+        isolationLevel: p.isolationLevel,
+        supportsDnsIsolation: p.supportsDnsIsolation,
+        tags: [...p.tags],
+        createdAt: p.createdAt
+      }));
+    const body: NetworkRelaysHttpResponse = { relays };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/relays', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/relays.' });
+  });
+
+  // GET /v1/network/routes — list logical relay routes (opaque ids only).
+  app.get('/v1/network/routes', (req, res) => {
+    const limit = readNetworkLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'Invalid limit. Must be a positive integer.' });
+    }
+    const routes: RelayRouteView[] = networkIsolationEngine
+      .listRoutes(limit)
+      .map((r): RelayRouteView => ({
+        id: r.id,
+        relayProfileId: r.relayProfileId,
+        ...(r.compartmentId !== undefined ? { compartmentId: r.compartmentId } : {}),
+        ...(r.personaId !== undefined ? { personaId: r.personaId } : {}),
+        ...(r.fragmentId !== undefined ? { fragmentId: r.fragmentId } : {}),
+        assignedAt: r.assignedAt,
+        active: r.active
+      }));
+    const body: NetworkRoutesHttpResponse = { routes };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/routes', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/routes.' });
+  });
+
+  // GET /v1/network/bindings — list compartment→route bindings.
+  app.get('/v1/network/bindings', (req, res) => {
+    const limit = readNetworkLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'Invalid limit. Must be a positive integer.' });
+    }
+    const bindings: NetworkCompartmentBindingView[] = networkIsolationEngine
+      .listBindings(limit)
+      .map((b): NetworkCompartmentBindingView => ({
+        compartmentId: b.compartmentId,
+        relayRouteId: b.relayRouteId,
+        isolationLevel: b.isolationLevel,
+        createdAt: b.createdAt
+      }));
+    const body: NetworkBindingsHttpResponse = { bindings };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/bindings', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/bindings.' });
+  });
+
+  // GET /v1/network/isolation — DNS isolation + rotation policy metadata.
+  app.get('/v1/network/isolation', (_req, res) => {
+    const dns = networkIsolationEngine.getDnsPolicy();
+    const rotation = networkIsolationEngine.getRotationPolicy();
+    const body: NetworkIsolationHttpResponse = {
+      dnsPolicy: {
+        enabled: dns.enabled,
+        isolatePerCompartment: dns.isolatePerCompartment,
+        isolatePerPersona: dns.isolatePerPersona,
+        isolatePerFragment: dns.isolatePerFragment
+      },
+      rotationPolicy: {
+        enabled: rotation.enabled,
+        rotateOnPersonaChange: rotation.rotateOnPersonaChange,
+        rotateOnCategoryChange: rotation.rotateOnCategoryChange,
+        rotateOnCriticalRisk: rotation.rotateOnCriticalRisk,
+        maxAssignmentsPerRoute: rotation.maxAssignmentsPerRoute
+      }
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/isolation', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/isolation.' });
   });
 
   // Unknown routes → 404.

@@ -512,3 +512,34 @@ grl runtime policy signals --source multi_agent --severity high --limit 20
 No new transport, browser, Tor/proxy, crawler, DB/Redis, or AI/ML is introduced —
 the only real transport remains SearXNG. See
 [`docs/runtime-policy-orchestrator.md`](docs/runtime-policy-orchestrator.md#sprint-29--execute-parity-bounded-buffer-and-filters).
+
+## Privacy Transport Relay & Network Isolation Layer (Sprint 30)
+
+Sprint 30 adds GRL's first **network privacy layer** — a purely **logical**
+relay / route abstraction that reduces *unnecessary* cross-correlation between
+outbound research activities (cross-persona interest aggregation, implicit route
+reuse, trivially stable network signatures):
+
+- each compartment is bound to a stable, **isolated** logical relay route — no
+  cross-compartment route reuse;
+- routes rotate deterministically on persona / category change, critical risk,
+  or an assignment ceiling;
+- a **DNS isolation metadata model** records operator intent (per compartment /
+  persona / fragment) — there is no real DNS resolver;
+- `execute` and `execute-mock` responses include a `networkIsolation` block, and
+  a `network_isolation` runtime signal feeds the policy orchestrator;
+- fail-closed: a quarantined compartment, disabled transport, or unavailable
+  relay denies the request.
+
+This is **metadata only**. There is no real Tor, proxy, VPN, SOCKS, DNS, browser,
+or cloud relay, and no IP / host / URL / DNS name / credential is ever stored.
+GRL is **NOT** an anonymity network, does **NOT** replace Tor, and makes **NO**
+promise of invisibility, anti-forensics, or anti-detection.
+
+```bash
+grl network relays
+grl network routes --limit 20
+grl network isolation
+```
+
+See [`docs/network-isolation.md`](docs/network-isolation.md).

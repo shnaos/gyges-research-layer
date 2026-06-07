@@ -18,6 +18,7 @@ import { runTrust } from './commands/trust.js';
 import { runIncidents } from './commands/incidents.js';
 import { runRuntimeVersion, runRuntimeReload, runRuntimeProfiles, runRuntimeProfile, runRuntimeProfileSwitch, runRuntimePacks, runRuntimePolicy, runRuntimePolicySignals, runRuntimePolicyLastDecision } from './commands/runtime.js';
 import { runTransports } from './commands/transports.js';
+import { runNetworkRelays, runNetworkRoutes, runNetworkBindings, runNetworkIsolation } from './commands/network.js';
 import { runAgentsList, runAgentGet, runAgentLeases, runAgentEvict, runAgentRestrict } from './commands/agents.js';
 import {
   runPrivacyFragments,
@@ -210,6 +211,55 @@ program
   .action(async () => {
     await runCommand(async (client, cfg) => {
       await runTransports(client, cfg);
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// grl network [subcommand] — Sprint 30 (metadata only; no host/IP/URL/DNS)
+// ---------------------------------------------------------------------------
+const networkCmd = program
+  .command('network')
+  .description('Network isolation / relay inspection commands (metadata only)');
+
+networkCmd
+  .command('relays', { isDefault: true })
+  .description('List logical relay profiles')
+  .option('--limit <n>', 'Maximum number of relays to show')
+  .action(async (opts: { limit?: string }) => {
+    await runCommand(async (client, cfg) => {
+      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+      await runNetworkRelays(client, cfg, { limit });
+    });
+  });
+
+networkCmd
+  .command('routes')
+  .description('List logical relay routes (opaque ids only)')
+  .option('--limit <n>', 'Maximum number of routes to show')
+  .action(async (opts: { limit?: string }) => {
+    await runCommand(async (client, cfg) => {
+      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+      await runNetworkRoutes(client, cfg, { limit });
+    });
+  });
+
+networkCmd
+  .command('bindings')
+  .description('List compartment→route bindings')
+  .option('--limit <n>', 'Maximum number of bindings to show')
+  .action(async (opts: { limit?: string }) => {
+    await runCommand(async (client, cfg) => {
+      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+      await runNetworkBindings(client, cfg, { limit });
+    });
+  });
+
+networkCmd
+  .command('isolation')
+  .description('Show DNS + rotation isolation policies')
+  .action(async () => {
+    await runCommand(async (client, cfg) => {
+      await runNetworkIsolation(client, cfg);
     });
   });
 

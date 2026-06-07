@@ -97,6 +97,7 @@ Each source maps to one of the 12 established GRL engines:
 | `persona_isolation`       | PersonaIsolationEngine              | 25     |
 | `temporal_obfuscation`    | TemporalObfuscationEngine           | 26     |
 | `transport_fingerprint`   | TransportFingerprintEngine          | 27     |
+| `network_isolation`       | NetworkIsolationEngine              | 30     |
 | `trust_reputation`        | CompartmentTrustEngine              | 14     |
 | `adaptive_defense`        | AdaptiveDefenseEngine               | 13     |
 | `capability_firewall`     | CapabilityFirewall                  | 3      |
@@ -121,14 +122,17 @@ allow < delay < rotate_* < require_approval < cooldown < temporary_block < deny
 | `rotate_session`          | Rotate the active session before execution.      |
 | `rotate_fragment`         | Rotate the identity fragment before execution.   |
 | `rotate_fingerprint`      | Rotate transport headers before execution.       |
+| `rotate_identity`         | Rotate the network identity (relay route). (Sprint 30) |
 | `require_approval`        | Block until a human approves the request.        |
 | `cooldown`                | Enter a timed cooldown window; reject until end. |
 | `temporary_block`         | Reject for a fixed temporary period.             |
 | `deny`                    | Permanently reject this request.                 |
 
-Rotation actions (`rotate_session`, `rotate_fragment`, `rotate_fingerprint`) are
-**not** mutually exclusive — they accumulate. Any number of rotation signals can
-be simultaneously active.
+Rotation actions (`rotate_session`, `rotate_fragment`, `rotate_fingerprint`,
+`rotate_identity`) are **not** mutually exclusive — they accumulate. Any number
+of rotation signals can be simultaneously active. Each maps to a decision flag
+(`requiresSessionRotation`, `requiresFragmentRotation`,
+`requiresFingerprintRotation`, `requiresIdentityRotation`).
 
 ---
 

@@ -209,6 +209,7 @@ interface WireCompositeRuntimeDecisionView {
   requiresSessionRotation: boolean;
   requiresFragmentRotation: boolean;
   requiresFingerprintRotation: boolean;
+  requiresIdentityRotation: boolean;
   reason: string;
   signals: WirePolicySignalView[];
   conflicts: WirePolicyConflictView[];
@@ -233,6 +234,64 @@ interface WirePolicyOrchestratorSignalsResponse {
 
 interface WirePolicyOrchestratorLastDecisionResponse {
   decision: WireCompositeRuntimeDecisionView | null;
+}
+
+// Sprint 30 — Network isolation wire types (metadata only).
+export interface NetworkListFilters {
+  limit?: number;
+}
+
+export interface WireRelayProfileView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  isolationLevel: string;
+  supportsDnsIsolation: boolean;
+  tags: string[];
+  createdAt: number;
+}
+
+export interface WireRelayRouteView {
+  id: string;
+  relayProfileId: string;
+  compartmentId?: string;
+  personaId?: string;
+  fragmentId?: string;
+  assignedAt: number;
+  active: boolean;
+}
+
+export interface WireNetworkBindingView {
+  compartmentId: string;
+  relayRouteId: string;
+  isolationLevel: string;
+  createdAt: number;
+}
+
+export interface WireNetworkIsolationResponse {
+  dnsPolicy: {
+    enabled: boolean;
+    isolatePerCompartment: boolean;
+    isolatePerPersona: boolean;
+    isolatePerFragment: boolean;
+  };
+  rotationPolicy: {
+    enabled: boolean;
+    rotateOnPersonaChange: boolean;
+    rotateOnCategoryChange: boolean;
+    rotateOnCriticalRisk: boolean;
+    maxAssignmentsPerRoute: number;
+  };
+}
+
+interface WireNetworkRelaysResponse {
+  relays: WireRelayProfileView[];
+}
+interface WireNetworkRoutesResponse {
+  routes: WireRelayRouteView[];
+}
+interface WireNetworkBindingsResponse {
+  bindings: WireNetworkBindingView[];
 }
 
 // ---------------------------------------------------------------------------
@@ -851,4 +910,45 @@ export class GrlAgentClient {
     );
     return wire.decision;
   }
+
+  // ---------------------------------------------------------------------------
+  // Sprint 30 — Privacy Transport Relay & Network Isolation
+  //
+  // Metadata only. These NEVER return a host, IP, URL, DNS name, endpoint,
+  // credential, token, or raw input — only opaque relay/route ids and
+  // structural isolation metadata.
+  // ---------------------------------------------------------------------------
+
+  /** List registered relay profiles. Optional `limit`. */
+  async listRelayProfiles(filters: NetworkListFilters = {}): Promise<WireRelayProfileView[]> {
+    const path = `/v1/network/relays${networkQuery(filters)}`;
+    const wire = await this.request<WireNetworkRelaysResponse>('GET', path);
+    return wire.relays;
+  }
+
+  /** List logical relay routes (opaque ids only). Optional `limit`. */
+  async listRelayRoutes(filters: NetworkListFilters = {}): Promise<WireRelayRouteView[]> {
+    const path = `/v1/network/routes${networkQuery(filters)}`;
+    const wire = await this.request<WireNetworkRoutesResponse>('GET', path);
+    return wire.routes;
+  }
+
+  /** List compartment→route bindings. Optional `limit`. */
+  async listNetworkBindings(filters: NetworkListFilters = {}): Promise<WireNetworkBindingView[]> {
+    const path = `/v1/network/bindings${networkQuery(filters)}`;
+    const wire = await this.request<WireNetworkBindingsResponse>('GET', path);
+    return wire.bindings;
+  }
+
+  /** Get the DNS + rotation isolation policy metadata. */
+  async getNetworkIsolation(): Promise<WireNetworkIsolationResponse> {
+    return this.request<WireNetworkIsolationResponse>('GET', '/v1/network/isolation');
+  }
+}
+
+function networkQuery(filters: NetworkListFilters): string {
+  const params = new URLSearchParams();
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  const q = params.toString();
+  return q ? `?${q}` : '';
 }

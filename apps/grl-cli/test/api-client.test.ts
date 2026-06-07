@@ -186,6 +186,29 @@ describe('GrlApiClient', () => {
       expect(capturedUrl).toBe('/v1/runtime/policy-orchestrator/signals');
     });
 
+    it('listNetworkRoutes() builds the limit query string', async () => {
+      let capturedUrl = '';
+      const { base } = await startServer((req, res) => {
+        capturedUrl = req.url ?? '';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ routes: [] }));
+      });
+      await client(base).listNetworkRoutes({ limit: 3 });
+      expect(capturedUrl).toContain('/v1/network/routes');
+      expect(capturedUrl).toContain('limit=3');
+    });
+
+    it('getNetworkIsolation() returns parsed policies', async () => {
+      const fixture = {
+        dnsPolicy: { enabled: true, isolatePerCompartment: true, isolatePerPersona: false, isolatePerFragment: false },
+        rotationPolicy: { enabled: true, rotateOnPersonaChange: true, rotateOnCategoryChange: true, rotateOnCriticalRisk: true, maxAssignmentsPerRoute: 50 }
+      };
+      const { base } = await startServer(jsonServer(200, fixture));
+      const result = await client(base).getNetworkIsolation();
+      expect(result.dnsPolicy.enabled).toBe(true);
+      expect(result.rotationPolicy.maxAssignmentsPerRoute).toBe(50);
+    });
+
     it('listIncidents() returns parsed incidents', async () => {
       const { base } = await startServer(jsonServer(200, { incidents: [] }));
       const result = await client(base).listIncidents();

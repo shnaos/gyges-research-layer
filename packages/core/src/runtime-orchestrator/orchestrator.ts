@@ -399,6 +399,7 @@ function buildDecision(
     requiresSessionRotation: rotations?.has('rotate_session') ?? false,
     requiresFragmentRotation: rotations?.has('rotate_fragment') ?? false,
     requiresFingerprintRotation: rotations?.has('rotate_fingerprint') ?? false,
+    requiresIdentityRotation: rotations?.has('rotate_identity') ?? false,
     reason,
     signals: signals.map((s) => ({
       ...s,
