@@ -1552,6 +1552,21 @@ export interface LocalApiOptions {
    */
   networkIsolationEngine?: NetworkIsolationEngine;
   /**
+   * Sprint 32 — REAL execution delay (temporal/behavioral jitter).
+   *
+   * When `true`, the deterministic delay computed by the temporal-obfuscation and
+   * behavioral-privacy gates is actually awaited before execution (a real,
+   * event-loop-friendly `setTimeout`-based wait), bounded by
+   * `maxExecutionDelayMs`. Defaults to **false** so timing remains predictable in
+   * tests and CI. This is a PRIVACY knob, not a security gate — disabling it never
+   * relaxes a fail-closed decision; it only skips the cosmetic spacing wait.
+   */
+  executionDelayEnabled?: boolean;
+  /** Hard server-side cap on the real execution delay (ms). Default 2000. */
+  maxExecutionDelayMs?: number;
+  /** Injectable sleep (for deterministic tests). Defaults to a real setTimeout wait. */
+  sleep?: (ms: number) => Promise<void>;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1832,6 +1847,29 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   // no host/IP/URL/credential stored.
   const networkIsolationEngine =
     options.networkIsolationEngine ?? new NetworkIsolationEngine();
+
+  // Sprint 32 — real execution delay (privacy jitter). Deterministic duration
+  // (from the temporal/behavioral gates), real bounded wall-clock wait, OFF by
+  // default. The cap is enforced regardless of what an engine recommends.
+  const executionDelayEnabled = options.executionDelayEnabled ?? false;
+  const DEFAULT_MAX_EXECUTION_DELAY_MS = 2000;
+  const maxExecutionDelayMs = (() => {
+    const v = options.maxExecutionDelayMs ?? DEFAULT_MAX_EXECUTION_DELAY_MS;
+    return Number.isFinite(v) ? Math.max(0, Math.floor(v)) : DEFAULT_MAX_EXECUTION_DELAY_MS;
+  })();
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  /**
+   * Apply the real, bounded execution delay. Returns the number of ms actually
+   * awaited (0 when disabled or when the requested delay is non-positive). The
+   * requested duration is deterministic; the wait itself adds bounded wall-clock
+   * latency. Never throws — a delay is a privacy knob, never a gate.
+   */
+  const applyExecutionDelay = async (requestedMs: number): Promise<number> => {
+    if (!executionDelayEnabled) return 0;
+    const ms = Math.max(0, Math.min(Math.floor(requestedMs || 0), maxExecutionDelayMs));
+    if (ms > 0) await sleep(ms);
+    return ms;
+  };
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external

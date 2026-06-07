@@ -27,6 +27,11 @@ export interface SecurityEventEngineOptions {
   generateId?: () => string;
   /** Backing store. Defaults to a fresh in-memory {@link AuditStore}. */
   store?: AuditStore;
+  /**
+   * Upper bound on retained events when a default store is created (Sprint 32).
+   * Ignored when an explicit `store` is provided.
+   */
+  maxEvents?: number;
 }
 
 export class SecurityEventEngine {
@@ -35,7 +40,9 @@ export class SecurityEventEngine {
   private readonly generateId: () => string;
 
   constructor(options: SecurityEventEngineOptions = {}) {
-    this.store = options.store ?? new AuditStore();
+    this.store = options.store ?? new AuditStore(
+      options.maxEvents !== undefined ? { maxEvents: options.maxEvents } : {}
+    );
     this.now = options.now ?? Date.now;
     this.generateId = options.generateId ?? randomUUID;
   }
