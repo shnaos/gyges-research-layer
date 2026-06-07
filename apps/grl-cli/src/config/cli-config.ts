@@ -71,10 +71,14 @@ export function resolveCliConfig(
 ): GrlCliConfig {
   const fileConfig = loadFileConfig();
   const envConfig = loadEnvConfig();
+  // Strip undefined values so they don't shadow lower-precedence defaults.
+  const definedOverrides = Object.fromEntries(
+    Object.entries(overrides).filter(([, v]) => v !== undefined)
+  ) as Partial<GrlCliConfig>;
   return {
     ...DEFAULT_CLI_CONFIG,
     ...fileConfig,
     ...envConfig,
-    ...overrides
+    ...definedOverrides
   };
 }
