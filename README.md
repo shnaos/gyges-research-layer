@@ -484,3 +484,31 @@ grl runtime policy last-decision    # show last composite decision
 ```
 
 See [`docs/runtime-policy-orchestrator.md`](docs/runtime-policy-orchestrator.md).
+
+## Real Execute Orchestrator Integration & Signal Parity (Sprint 29)
+
+Sprint 29 wires the Runtime Policy Orchestrator into the **real**
+`POST /v1/capabilities/execute` endpoint, achieving full parity with
+`execute-mock`:
+
+- both endpoints collect gate signals through a shared per-request
+  `PolicySignalCollector` and return a `runtimePolicy` block on **every** decision
+  path (allowed, denied, pending) — even when a gate short-circuits before
+  execution;
+- for the same authorised request the **common signal sources** match across both
+  endpoints; the only difference is the transport (mock vs SearXNG when enabled);
+- the `multi_agent` source now emits real signals (registered / quota-exceeded /
+  restricted / evicted);
+- the orchestrator's signal inspection buffer is **bounded** (FIFO eviction,
+  default 500) — memory can never grow without bound, and a
+  `runtime_policy_signal_evicted` audit event records evictions;
+- the signals endpoint, CLI, and SDK gain `source` / `action` / `severity` /
+  `limit` filters (invalid values are rejected fail-closed with HTTP 400).
+
+```bash
+grl runtime policy signals --source multi_agent --severity high --limit 20
+```
+
+No new transport, browser, Tor/proxy, crawler, DB/Redis, or AI/ML is introduced —
+the only real transport remains SearXNG. See
+[`docs/runtime-policy-orchestrator.md`](docs/runtime-policy-orchestrator.md#sprint-29--execute-parity-bounded-buffer-and-filters).

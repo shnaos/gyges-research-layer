@@ -597,10 +597,18 @@ export class GrlApiClient {
     );
   }
 
-  async listPolicyOrchestratorSignals(): Promise<PolicyOrchestratorSignalsResponse> {
+  async listPolicyOrchestratorSignals(
+    filters: PolicySignalFilters = {}
+  ): Promise<PolicyOrchestratorSignalsResponse> {
+    const params = new URLSearchParams();
+    if (filters.source) params.set('source', filters.source);
+    if (filters.action) params.set('action', filters.action);
+    if (filters.severity) params.set('severity', filters.severity);
+    if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+    const qs = params.toString();
     return this.request<PolicyOrchestratorSignalsResponse>(
       'GET',
-      '/v1/runtime/policy-orchestrator/signals'
+      `/v1/runtime/policy-orchestrator/signals${qs ? `?${qs}` : ''}`
     );
   }
 
@@ -660,6 +668,14 @@ export interface PolicyOrchestratorPoliciesResponse {
 
 export interface PolicyOrchestratorSignalsResponse {
   signals: PolicySignalView[];
+}
+
+/** Optional filters for `grl runtime policy signals` (Sprint 29). */
+export interface PolicySignalFilters {
+  source?: string;
+  action?: string;
+  severity?: string;
+  limit?: number;
 }
 
 export interface PolicyOrchestratorLastDecisionResponse {

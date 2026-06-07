@@ -575,7 +575,8 @@ export type SecurityEventTypeView =
   | 'user_agent_rotated'
   | 'runtime_policy_evaluated'
   | 'runtime_policy_conflict_detected'
-  | 'runtime_policy_decision_applied';
+  | 'runtime_policy_decision_applied'
+  | 'runtime_policy_signal_evicted';
 
 /**
  * Public, secret-free view of a recorded security event.

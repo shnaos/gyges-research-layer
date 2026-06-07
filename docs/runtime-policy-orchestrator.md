@@ -2,6 +2,14 @@
 
 Sprint 28 introduces the first **central runtime arbitration layer** in GRL.
 
+> **Sprint 29 update.** The orchestrator is now wired into the **real**
+> `/v1/capabilities/execute` endpoint as well as `execute-mock`, both endpoints
+> collect signals through a shared per-request `PolicySignalCollector`, the
+> `multi_agent` source now emits real signals, and the orchestrator's signal
+> inspection buffer is **bounded** (FIFO eviction, default 500). See
+> [Sprint 29 — execute parity, bounded buffer, filters](#sprint-29--execute-parity-bounded-buffer-and-filters)
+> below.
+
 Until now each privacy and security gate in the execution pipeline — Capability
 Graph, Trust Reputation, Behavioral Privacy, Persona Isolation, Temporal
 Obfuscation, Transport Fingerprint, Adaptive Defense, Capability Firewall,
@@ -247,7 +255,7 @@ Three read-only metadata endpoints are added:
 | Method | Path                                                   | Description                       |
 |--------|--------------------------------------------------------|-----------------------------------|
 | `GET`  | `/v1/runtime/policy-orchestrator/policies`             | List registered composite policies|
-| `GET`  | `/v1/runtime/policy-orchestrator/signals`              | List accumulated policy signals   |
+| `GET`  | `/v1/runtime/policy-orchestrator/signals`              | List buffered policy signals (Sprint 29: `?source=&action=&severity=&limit=` filters) |
 | `GET`  | `/v1/runtime/policy-orchestrator/last-decision`        | Get the last composite decision   |
 
 All responses contain **metadata only** — never raw request input, tokens, or secrets.
@@ -258,8 +266,14 @@ All responses contain **metadata only** — never raw request input, tokens, or 
 
 ```bash
 grl runtime policy                  # list registered policies
-grl runtime policy signals          # list accumulated signals
+grl runtime policy signals          # list buffered signals
 grl runtime policy last-decision    # show last composite decision
+
+# Sprint 29 — filters
+grl runtime policy signals --source multi_agent
+grl runtime policy signals --severity high
+grl runtime policy signals --action deny --limit 20
+grl runtime policy signals --source multi_agent --json
 ```
 
 ---
@@ -270,9 +284,20 @@ grl runtime policy last-decision    # show last composite decision
 const client = new GrlAgentClient();
 
 const policies = await client.listRuntimePolicyOrchestratorPolicies();
-const signals  = await client.listRuntimePolicySignals();
 const decision = await client.getLastRuntimePolicyDecision();
+
+// Sprint 29 — listRuntimePolicySignals accepts optional filters.
+const all      = await client.listRuntimePolicySignals();
+const filtered = await client.listRuntimePolicySignals({
+  source: 'multi_agent',
+  action: 'deny',
+  severity: 'critical',
+  limit: 20
+});
 ```
+
+An invalid filter value is rejected server-side with HTTP 400 and surfaces as a
+fail-closed error (`GrlAgentSdkError` in the SDK, `CliError` in the CLI).
 
 ---
 
@@ -285,17 +310,122 @@ Three new event types are emitted by the orchestrator (via `SecurityEventEngine`
 | `runtime_policy_evaluated`           | After every `evaluate()` call.                    |
 | `runtime_policy_conflict_detected`   | When one or more conflicts are found.             |
 | `runtime_policy_decision_applied`    | When the composite decision is attached to a response.|
+| `runtime_policy_signal_evicted`      | (Sprint 29) When the bounded buffer evicts oldest signals FIFO; metadata `{ evictedCount, maxSignals }`.|
+
+---
+
+## Sprint 29 — execute parity, bounded buffer, and filters
+
+### execute / execute-mock parity
+
+Both `POST /v1/capabilities/execute-mock` and the real `POST /v1/capabilities/execute`
+now run the identical orchestration path:
+
+```
+POST /v1/capabilities/execute(-mock)
+  ↓
+gates emit PolicySignals into a per-request PolicySignalCollector
+  ↓
+collector.evaluate() → RuntimePolicyOrchestrator
+  ↓
+runtimePolicy block on EVERY decision response (allowed | denied | pending)
+  ↓ (execute only)
+SearXNG / mock execution if allowed
+```
+
+- **Every decision path carries `runtimePolicy`.** Even when a gate short-circuits
+  (a deny or a pending approval before execution), the composite decision is
+  evaluated from exactly the signals collected up to that point and injected into
+  the response.
+- **Parity rule.** For the same authorised request (e.g. `search` / `low`), the
+  **common signal sources** present in `execute-mock` are also present in
+  `execute`. The only allowed difference is the transport: `execute-mock` always
+  runs the mock transport, while `execute` runs the SearXNG transport when it is
+  enabled (and falls back fail-closed otherwise). `execute-mock` additionally
+  emits the `behavioral_privacy`, `persona_isolation`, and `temporal_obfuscation`
+  sources for its richer simulated pipeline; `execute` emits the shared core
+  sources (`capability_graph`, `multi_agent`, `trust_reputation`,
+  `capability_firewall`, `transport_policy`, `privacy_boundary`,
+  `transport_fingerprint`, `sandbox`, and `adaptive_defense` when triggered).
+
+This answers questions such as *why was this search delayed / approved / denied /
+rotated / fingerprint-isolated?* directly from the real endpoint's `runtimePolicy`
+block and the `/signals` inspection endpoint.
+
+### Per-request signal isolation (`PolicySignalCollector`)
+
+Sprint 28 emitted signals directly into the orchestrator's shared buffer and
+evaluated the **whole** buffer, which leaked signals across requests (and across
+concurrent in-flight requests). Sprint 29 introduces `PolicySignalCollector`:
+
+- one collector per request gathers only that request's signals;
+- `collector.evaluate()` records those signals into the orchestrator's rolling
+  inspection buffer **and** derives the composite decision from this request's
+  signals only;
+- decisions are therefore never contaminated by other requests, and the rolling
+  buffer's eviction can never change decision correctness.
+
+### Bounded signal buffer (FIFO)
+
+The orchestrator's inspection buffer is bounded by `maxSignals` (default **500**):
+
+```ts
+new RuntimePolicyOrchestrator({ maxSignals: 500 });
+```
+
+- When recording would exceed `maxSignals`, the **oldest** signals are evicted FIFO.
+- Memory can never grow without bound.
+- `lastDecision` is preserved across eviction.
+- When eviction occurs during a request, a `runtime_policy_signal_evicted` audit
+  event is emitted with `{ evictedCount, maxSignals }` (no other metadata).
+- A non-positive `maxSignals` is clamped to `1` (fail-closed: always bounded).
+
+### `multi_agent` signals
+
+The `multi_agent` source now emits real signals from the agent registry state,
+evaluated as a gate right after the capability graph:
+
+| Agent state                         | `action`          | `severity` | Pipeline outcome |
+|-------------------------------------|-------------------|------------|------------------|
+| registered / healthy, within quota  | `allow`           | `info`     | continue         |
+| concurrent execution quota exceeded | `temporary_block` | `high`     | denied           |
+| restricted                          | `require_approval`| `high`     | pending (approval)|
+| evicted / quarantined               | `deny`            | `critical` | denied           |
+
+The gate is **read-only** with respect to quota accounting: it idempotently
+registers the agent (a fresh agent starts `idle`, under quota) and inspects
+status/counts. It does not wire execution-count lifecycle into the request path —
+that remains out of scope; the quota-exceeded signal is derived read-only from
+registry counts.
+
+### `/signals` endpoint filters
+
+`GET /v1/runtime/policy-orchestrator/signals` accepts optional, composable filters:
+
+| Query param | Validated against                | On invalid value |
+|-------------|----------------------------------|------------------|
+| `source`    | the 12 `PolicySignalSource` values | HTTP 400        |
+| `action`    | the 9 `UnifiedPrivacyAction` values | HTTP 400        |
+| `severity`  | `info\|low\|medium\|high\|critical` | HTTP 400        |
+| `limit`     | positive integer (clamped to `maxSignals`) | HTTP 400 |
+
+Filters compose with AND semantics; `limit` keeps the **most recent** matching
+signals. Unknown filter values are rejected fail-closed (400) rather than
+silently ignored.
+
+```bash
+curl 'http://127.0.0.1:8787/v1/runtime/policy-orchestrator/signals?source=multi_agent&severity=high&limit=20'
+```
 
 ---
 
 ## MVP limits
 
 - **No persistence** — the signal buffer and last decision are in-memory only; restarting the process clears them.
-- **No signal expiry** — signals accumulate indefinitely until the process restarts. A future sprint may add time-windowed signal buffers.
-- **Only `execute-mock` wired** — the real `execute` endpoint (SearXNG transport) does not yet collect signals or produce a `runtimePolicy` block.
-- **`multi_agent` source not yet wired** — the type is declared and reserved; no gate currently emits signals with `source: 'multi_agent'`.
+- **Bounded, not time-windowed** — the buffer is bounded by count (FIFO eviction, default 500), not by age. A future sprint may add time-windowed signal buffers.
 - **No priority queuing** — conflicts are detected but not queued for retry; a denied or cooled-down request is simply rejected.
 - **Single active policy** — multiple policies can be registered, but only the first enabled one governs each evaluation.
+- **`multi_agent` quota signal is read-only** — execution-count lifecycle (increment/decrement around real executions) is not wired into the request path; the quota-exceeded signal reflects registry counts as set by the registry/management endpoints.
 
 ---
 

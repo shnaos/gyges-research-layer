@@ -157,6 +157,35 @@ describe('GrlApiClient', () => {
       expect(capturedUrl).toContain('limit=10');
     });
 
+    it('listPolicyOrchestratorSignals() builds the filter query string', async () => {
+      let capturedUrl = '';
+      const { base } = await startServer((req, res) => {
+        capturedUrl = req.url ?? '';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ signals: [] }));
+      });
+      await client(base).listPolicyOrchestratorSignals({
+        source: 'multi_agent',
+        severity: 'high',
+        limit: 5
+      });
+      expect(capturedUrl).toContain('/v1/runtime/policy-orchestrator/signals');
+      expect(capturedUrl).toContain('source=multi_agent');
+      expect(capturedUrl).toContain('severity=high');
+      expect(capturedUrl).toContain('limit=5');
+    });
+
+    it('listPolicyOrchestratorSignals() omits the query when no filters', async () => {
+      let capturedUrl = '';
+      const { base } = await startServer((req, res) => {
+        capturedUrl = req.url ?? '';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ signals: [] }));
+      });
+      await client(base).listPolicyOrchestratorSignals();
+      expect(capturedUrl).toBe('/v1/runtime/policy-orchestrator/signals');
+    });
+
     it('listIncidents() returns parsed incidents', async () => {
       const { base } = await startServer(jsonServer(200, { incidents: [] }));
       const result = await client(base).listIncidents();

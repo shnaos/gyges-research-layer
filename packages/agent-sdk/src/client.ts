@@ -161,6 +161,26 @@ interface WireAgentActionResponse {
   updatedAt: number;
 }
 
+// Sprint 29 — runtime policy signal source/action/severity vocabularies and
+// the optional filter set accepted by listRuntimePolicySignals().
+export type PolicySignalSource =
+  | 'capability_graph' | 'multi_agent' | 'behavioral_privacy' | 'persona_isolation'
+  | 'temporal_obfuscation' | 'transport_fingerprint' | 'trust_reputation'
+  | 'adaptive_defense' | 'capability_firewall' | 'privacy_boundary'
+  | 'transport_policy' | 'sandbox';
+export type UnifiedPrivacyAction =
+  | 'allow' | 'delay' | 'rotate_session' | 'rotate_fragment' | 'rotate_fingerprint'
+  | 'require_approval' | 'cooldown' | 'temporary_block' | 'deny';
+export type PolicySignalSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+/** Optional filters for {@link GrlAgentClient.listRuntimePolicySignals}. */
+export interface RuntimePolicySignalFilters {
+  source?: PolicySignalSource;
+  action?: UnifiedPrivacyAction;
+  severity?: PolicySignalSeverity;
+  limit?: number;
+}
+
 // Sprint 28 — Runtime Policy Orchestrator wire types
 interface WirePolicySignalView {
   id: string;
@@ -798,14 +818,24 @@ export class GrlAgentClient {
   }
 
   /**
-   * List all accumulated policy signals from the runtime orchestrator.
-   * Returns metadata only — never raw input, tokens, or secrets.
+   * List buffered policy signals from the runtime orchestrator.
+   *
+   * Sprint 29 — optional filters (`source`, `action`, `severity`, `limit`) are
+   * sent as query params and validated server-side; an invalid value yields a
+   * `capability_failed` error (HTTP 400). Returns metadata only — never raw
+   * input, tokens, or secrets.
    */
-  async listRuntimePolicySignals(): Promise<WirePolicySignalView[]> {
-    const wire = await this.request<WirePolicyOrchestratorSignalsResponse>(
-      'GET',
-      '/v1/runtime/policy-orchestrator/signals'
-    );
+  async listRuntimePolicySignals(
+    filters: RuntimePolicySignalFilters = {}
+  ): Promise<WirePolicySignalView[]> {
+    const params = new URLSearchParams();
+    if (filters.source !== undefined) params.set('source', filters.source);
+    if (filters.action !== undefined) params.set('action', filters.action);
+    if (filters.severity !== undefined) params.set('severity', filters.severity);
+    if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+    const query = params.toString();
+    const path = `/v1/runtime/policy-orchestrator/signals${query ? `?${query}` : ''}`;
+    const wire = await this.request<WirePolicyOrchestratorSignalsResponse>('GET', path);
     return wire.signals;
   }
 

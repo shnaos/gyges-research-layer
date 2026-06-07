@@ -8,6 +8,14 @@
 // Client
 export { GrlAgentClient } from './client.js';
 
+// Runtime policy signal filters (Sprint 29)
+export type {
+  RuntimePolicySignalFilters,
+  PolicySignalSource,
+  UnifiedPrivacyAction,
+  PolicySignalSeverity
+} from './client.js';
+
 // Type guards / helpers
 export { isAllowed, isDenied, isPending } from './search.js';
 

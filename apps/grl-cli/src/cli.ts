@@ -175,10 +175,20 @@ policyCmd
 
 policyCmd
   .command('signals')
-  .description('List accumulated policy orchestrator signals')
-  .action(async () => {
+  .description('List buffered policy orchestrator signals')
+  .option('--source <source>', 'Filter by signal source (e.g. multi_agent)')
+  .option('--action <action>', 'Filter by unified privacy action (e.g. deny)')
+  .option('--severity <severity>', 'Filter by severity (info|low|medium|high|critical)')
+  .option('--limit <n>', 'Maximum number of signals to show')
+  .action(async (opts: { source?: string; action?: string; severity?: string; limit?: string }) => {
     await runCommand(async (client, cfg) => {
-      await runRuntimePolicySignals(client, cfg);
+      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+      await runRuntimePolicySignals(client, cfg, {
+        source: opts.source,
+        action: opts.action,
+        severity: opts.severity,
+        limit
+      });
     });
   });
 

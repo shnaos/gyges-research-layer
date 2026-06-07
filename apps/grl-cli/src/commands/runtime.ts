@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js';
+import type { GrlApiClient, PolicySignalFilters } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { CliError } from '../errors.js';
 import { printJson } from '../format/json.js';
@@ -163,9 +163,10 @@ export async function runRuntimePolicy(
 
 export async function runRuntimePolicySignals(
   client: GrlApiClient,
-  config: GrlCliConfig
+  config: GrlCliConfig,
+  filters: PolicySignalFilters = {}
 ): Promise<void> {
-  const result = await client.listPolicyOrchestratorSignals();
+  const result = await client.listPolicyOrchestratorSignals(filters);
 
   if (config.output === 'json') {
     printJson(result);

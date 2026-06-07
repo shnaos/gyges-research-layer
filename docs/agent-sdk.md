@@ -399,4 +399,24 @@ const decision = await client.getLastRuntimePolicyDecision();
 // → WireCompositeRuntimeDecisionView | null
 ```
 
+### Signal filters (Sprint 29)
+
+`listRuntimePolicySignals` accepts an optional filter object. Filters compose with
+AND semantics; `limit` keeps the most recent matching signals and is clamped
+server-side to the bounded buffer size.
+
+```ts
+import type { RuntimePolicySignalFilters } from '@gyges/agent-sdk';
+
+const filtered = await client.listRuntimePolicySignals({
+  source: 'multi_agent',     // PolicySignalSource
+  action: 'deny',            // UnifiedPrivacyAction
+  severity: 'critical',      // PolicySignalSeverity
+  limit: 20
+});
+```
+
+An invalid filter value is rejected server-side with HTTP 400 and surfaces as a
+fail-closed `GrlAgentSdkError`.
+
 These methods never return raw request input, approval tokens, or secrets. See [`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md).

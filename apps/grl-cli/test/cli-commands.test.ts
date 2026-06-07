@@ -30,7 +30,7 @@ import { runSearch } from '../src/commands/search.js';
 import { runAudit } from '../src/commands/audit.js';
 import { runTrust } from '../src/commands/trust.js';
 import { runIncidents } from '../src/commands/incidents.js';
-import { runRuntimeVersion, runRuntimeReload } from '../src/commands/runtime.js';
+import { runRuntimeVersion, runRuntimeReload, runRuntimePolicySignals } from '../src/commands/runtime.js';
 import { runTransports } from '../src/commands/transports.js';
 import type { GrlCliConfig } from '../src/config/cli-config.js';
 
@@ -285,6 +285,75 @@ describe('audit command', () => {
     out.restore();
     const parsed = JSON.parse(out.get());
     expect(parsed.events).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runtime policy signals (Sprint 29)
+// ---------------------------------------------------------------------------
+
+const POLICY_SIGNALS_FIXTURE = {
+  signals: [
+    {
+      id: 'sig-1',
+      source: 'multi_agent',
+      action: 'temporary_block',
+      severity: 'high',
+      reason: 'Agent concurrent execution quota exceeded.',
+      createdAt: 0
+    }
+  ]
+};
+
+describe('runtime policy signals command', () => {
+  it('forwards --source/--severity/--limit filters as query params', async () => {
+    let capturedUrl = '';
+    const { base } = await startServer((req, res) => {
+      capturedUrl = req.url ?? '';
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(POLICY_SIGNALS_FIXTURE));
+    });
+    const cfg = { ...tableConfig(), baseUrl: base };
+    const out = captureStdout();
+    await runRuntimePolicySignals(new GrlApiClient(cfg), cfg, {
+      source: 'multi_agent',
+      severity: 'high',
+      limit: 10
+    });
+    out.restore();
+    expect(capturedUrl).toContain('source=multi_agent');
+    expect(capturedUrl).toContain('severity=high');
+    expect(capturedUrl).toContain('limit=10');
+    expect(out.get()).toContain('multi_agent');
+    expect(out.get()).toContain('temporary_block');
+  });
+
+  it('emits JSON output in json mode', async () => {
+    const { base } = await startServer(
+      routeServer({ 'GET /v1/runtime/policy-orchestrator/signals': { status: 200, body: POLICY_SIGNALS_FIXTURE } })
+    );
+    const cfg = { ...jsonConfig(), baseUrl: base };
+    const out = captureStdout();
+    await runRuntimePolicySignals(new GrlApiClient(cfg), cfg, {});
+    out.restore();
+    const parsed = JSON.parse(out.get());
+    expect(parsed.signals).toHaveLength(1);
+    expect(parsed.signals[0].source).toBe('multi_agent');
+  });
+
+  it('surfaces a server 400 (invalid filter) as a CliError', async () => {
+    const { base } = await startServer(
+      routeServer({
+        'GET /v1/runtime/policy-orchestrator/signals': {
+          status: 400,
+          body: { error: 'Invalid source: "nope".' }
+        }
+      })
+    );
+    const cfg = { ...tableConfig(), baseUrl: base };
+    await expect(
+      runRuntimePolicySignals(new GrlApiClient(cfg), cfg, { source: 'multi_agent' })
+    ).rejects.toBeInstanceOf(CliError);
   });
 });
 
