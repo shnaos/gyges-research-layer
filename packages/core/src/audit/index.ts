@@ -14,7 +14,8 @@ export type {
   AuditQuery
 } from './types.js';
 
-export { AuditStore } from './store.js';
+export { AuditStore, DEFAULT_MAX_AUDIT_EVENTS } from './store.js';
+export type { AuditStoreOptions } from './store.js';
 
 export { SecurityEventEngine } from './engine.js';
 export type { SecurityEventEngineOptions } from './engine.js';

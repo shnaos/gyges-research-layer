@@ -52,21 +52,63 @@ interface StoredEvent {
   seq: number;
 }
 
+/**
+ * Default upper bound on retained audit events (Sprint 32 memory hardening).
+ *
+ * The store is in-memory only and was previously unbounded — every emitted
+ * event was retained for the process lifetime (Sprint 31 finding). It is now
+ * bounded: when the cap is exceeded the OLDEST events are evicted FIFO. The
+ * default is deliberately high so normal operation and existing audit queries
+ * are unaffected; eviction only protects a long-running process from unbounded
+ * growth. Query semantics are unchanged.
+ */
+export const DEFAULT_MAX_AUDIT_EVENTS = 50_000;
+
+export interface AuditStoreOptions {
+  /** Maximum retained events. Values < 1 are clamped to 1. Defaults to {@link DEFAULT_MAX_AUDIT_EVENTS}. */
+  maxEvents?: number;
+}
+
 export class AuditStore {
   /** Canonical event state, in insertion order. */
   private readonly events: StoredEvent[] = [];
   /** Monotonic insertion counter used to break `timestamp` ties stably. */
   private seq = 0;
+  /** Upper bound on retained events (FIFO eviction beyond this). */
+  private readonly maxEvents: number;
+  /** Total events evicted over the store's lifetime (observability). */
+  private evictedCount = 0;
+
+  constructor(options: AuditStoreOptions = {}) {
+    const requested = options.maxEvents ?? DEFAULT_MAX_AUDIT_EVENTS;
+    this.maxEvents = Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : DEFAULT_MAX_AUDIT_EVENTS;
+  }
 
   /**
    * Append an event. The event is deep-cloned on the way in, so a later
-   * mutation of the caller's object can never affect the store. Returns a
+   * mutation of the caller's object can never affect the store. If the store
+   * exceeds `maxEvents`, the oldest events are evicted FIFO. Returns a
    * defensive copy of the stored event.
    */
   append(event: SecurityEvent): SecurityEvent {
     const stored = cloneEvent(event);
     this.events.push({ event: stored, seq: this.seq++ });
+    if (this.events.length > this.maxEvents) {
+      const overflow = this.events.length - this.maxEvents;
+      this.events.splice(0, overflow);
+      this.evictedCount += overflow;
+    }
     return cloneEvent(stored);
+  }
+
+  /** Maximum number of events this store retains. */
+  capacity(): number {
+    return this.maxEvents;
+  }
+
+  /** Total number of events evicted (FIFO) over the store's lifetime. */
+  evicted(): number {
+    return this.evictedCount;
   }
 
   /**

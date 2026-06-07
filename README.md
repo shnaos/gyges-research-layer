@@ -421,6 +421,20 @@ See [`docs/agent-sdk.md`](docs/agent-sdk.md) for the full reference.
 - [`docs/searxng-transport.md`](docs/searxng-transport.md)
 - [`docs/roadmap.md`](docs/roadmap.md)
 
+### Audits (Sprint 31 — honest runtime reality)
+
+A global, code-verified audit of what is real vs mock/metadata/advisory:
+
+- [`docs/audits/production-readiness.md`](docs/audits/production-readiness.md) — readiness matrix & verdict
+- [`docs/audits/pipeline-mapping.md`](docs/audits/pipeline-mapping.md) — execute vs execute-mock gates
+- [`docs/audits/transport-reality.md`](docs/audits/transport-reality.md) — the one real transport; no hidden egress
+- [`docs/audits/mock-boundaries.md`](docs/audits/mock-boundaries.md) — effect classification of every subsystem
+- [`docs/audits/runtime-coherence.md`](docs/audits/runtime-coherence.md) — isolation keying & memory/state risks
+- [`docs/audits/runtime-convergence.md`](docs/audits/runtime-convergence.md) — Sprint 32 execute/execute-mock convergence & real effects
+
+Executable invariants: `npm run audit:coherence` and `npm run audit:mocks`
+(read-only, local, no network).
+
 ### Multi-Agent Runtime Isolation (Sprint 23)
 
 Multiple local AI agents can use GRL simultaneously with fully isolated runtime state:

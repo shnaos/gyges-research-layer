@@ -197,6 +197,8 @@ export interface ExecuteMockCapabilityHttpResponse {
   };
   runtimePolicy?: CompositeRuntimeDecisionView;
   networkIsolation?: NetworkIsolationDecisionView;
+  /** Sprint 32 — the REAL execution delay (ms) actually awaited (0 when disabled). */
+  appliedDelayMs?: number;
 }
 
 /** Trust level band a compartment falls into (Sprint 14). */

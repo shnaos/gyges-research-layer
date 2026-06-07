@@ -1552,6 +1552,21 @@ export interface LocalApiOptions {
    */
   networkIsolationEngine?: NetworkIsolationEngine;
   /**
+   * Sprint 32 — REAL execution delay (temporal/behavioral jitter).
+   *
+   * When `true`, the deterministic delay computed by the temporal-obfuscation and
+   * behavioral-privacy gates is actually awaited before execution (a real,
+   * event-loop-friendly `setTimeout`-based wait), bounded by
+   * `maxExecutionDelayMs`. Defaults to **false** so timing remains predictable in
+   * tests and CI. This is a PRIVACY knob, not a security gate — disabling it never
+   * relaxes a fail-closed decision; it only skips the cosmetic spacing wait.
+   */
+  executionDelayEnabled?: boolean;
+  /** Hard server-side cap on the real execution delay (ms). Default 2000. */
+  maxExecutionDelayMs?: number;
+  /** Injectable sleep (for deterministic tests). Defaults to a real setTimeout wait. */
+  sleep?: (ms: number) => Promise<void>;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1832,6 +1847,29 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   // no host/IP/URL/credential stored.
   const networkIsolationEngine =
     options.networkIsolationEngine ?? new NetworkIsolationEngine();
+
+  // Sprint 32 — real execution delay (privacy jitter). Deterministic duration
+  // (from the temporal/behavioral gates), real bounded wall-clock wait, OFF by
+  // default. The cap is enforced regardless of what an engine recommends.
+  const executionDelayEnabled = options.executionDelayEnabled ?? false;
+  const DEFAULT_MAX_EXECUTION_DELAY_MS = 2000;
+  const maxExecutionDelayMs = (() => {
+    const v = options.maxExecutionDelayMs ?? DEFAULT_MAX_EXECUTION_DELAY_MS;
+    return Number.isFinite(v) ? Math.max(0, Math.floor(v)) : DEFAULT_MAX_EXECUTION_DELAY_MS;
+  })();
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  /**
+   * Apply the real, bounded execution delay. Returns the number of ms actually
+   * awaited (0 when disabled or when the requested delay is non-positive). The
+   * requested duration is deterministic; the wait itself adds bounded wall-clock
+   * latency. Never throws — a delay is a privacy knob, never a gate.
+   */
+  const applyExecutionDelay = async (requestedMs: number): Promise<number> => {
+    if (!executionDelayEnabled) return 0;
+    const ms = Math.max(0, Math.min(Math.floor(requestedMs || 0), maxExecutionDelayMs));
+    if (ms > 0) await sleep(ms);
+    return ms;
+  };
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2561,6 +2599,310 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     return { kind: 'continue', view };
   };
 
+  // ── Sprint 32 — shared privacy pipeline (behavioral / persona / temporal) ──
+  //
+  // Extracted from the execute-mock handler so BOTH execute and execute-mock run
+  // the SAME behavioral-privacy, persona-isolation, and temporal-obfuscation
+  // gates with the SAME signals, audit events, and engine mutations (real, in-
+  // memory). The caller applies the returned effects: the bounded real delay,
+  // fragment/session rotation, persona-driven fingerprint rotation, and the
+  // network-isolation context. Behavioral critical-risk returns a `deny`; the
+  // caller builds the HTTP response (so this helper stays transport-agnostic).
+  interface PrivacyPipelineEffects {
+    categoryHint: PersonaCategory;
+    /** Deterministic total delay (behavioral jitter + temporal spacing), pre-cap. */
+    delayMs: number;
+    requiresNewFragment: boolean;
+    requiresSessionIsolation: boolean;
+    temporalSchedulingEscalation: boolean;
+    criticalRisk: boolean;
+    personaId: string;
+    temporalObfuscationView: TemporalObfuscationView;
+  }
+  type PrivacyPipelineResult =
+    | { kind: 'deny'; reason: string }
+    | { kind: 'continue'; effects: PrivacyPipelineEffects };
+  const runPrivacyPipeline = (
+    collector: PolicySignalCollector,
+    ctx: { agentId: string; compartmentId: string; requestId: string; riskLevel: RiskLevel; input: unknown }
+  ): PrivacyPipelineResult => {
+    const bpDecision: BehavioralPrivacyDecision = behavioralPrivacyEngine.evaluateRequest({
+      agentId: ctx.agentId,
+      riskLevel: ctx.riskLevel as 'low' | 'medium' | 'high'
+    });
+    behavioralPrivacyEngine.recordBehavior({ agentId: ctx.agentId });
+
+    if (!bpDecision.allowed) {
+      securityEventEngine.emit({
+        type: 'behavioral_privacy_escalated',
+        severity: 'critical',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Behavioral privacy engine blocked the request due to critical correlation risk.',
+        metadata: { reason: bpDecision.reason }
+      });
+      collector.emit({
+        source: 'behavioral_privacy',
+        action: 'deny',
+        severity: 'critical',
+        reason: bpDecision.reason ?? 'behavioral_privacy_blocked'
+      });
+      return { kind: 'deny', reason: bpDecision.reason ?? 'behavioral_privacy_blocked' };
+    }
+
+    if (bpDecision.requiresFragmentation) {
+      collector.emit({ source: 'behavioral_privacy', action: 'rotate_fragment', severity: 'medium', reason: bpDecision.reason ?? 'Behavioral fragmentation required.' });
+    } else if (bpDecision.requiresDelay) {
+      collector.emit({ source: 'behavioral_privacy', action: 'delay', severity: 'low', reason: bpDecision.reason ?? 'Behavioral jitter required.' });
+    } else {
+      collector.emit({ source: 'behavioral_privacy', action: 'allow', severity: 'info', reason: 'Behavioral privacy OK.' });
+    }
+
+    if (bpDecision.requiresDelay) {
+      securityEventEngine.emit({
+        type: 'behavioral_jitter_applied',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Behavioral jitter applied.',
+        metadata: { delayMs: bpDecision.recommendedDelayMs, reason: bpDecision.reason }
+      });
+    }
+
+    if (bpDecision.requiresFragmentation) {
+      const fragment = behavioralPrivacyEngine.fragmentManager.rotateFragment(ctx.agentId);
+      securityEventEngine.emit({
+        type: 'behavior_fragment_rotated',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Identity fragment rotated due to elevated correlation risk.',
+        metadata: { fragmentId: fragment.id, reason: bpDecision.reason }
+      });
+    } else {
+      const fragment = behavioralPrivacyEngine.fragmentManager.getActiveFragment(ctx.agentId);
+      if (fragment.requestCount === 0) {
+        securityEventEngine.emit({
+          type: 'behavior_fragment_created',
+          severity: 'info',
+          agentId: ctx.agentId,
+          compartmentId: ctx.compartmentId,
+          requestId: ctx.requestId,
+          message: 'New identity fragment created.',
+          metadata: { fragmentId: fragment.id }
+        });
+      }
+      behavioralPrivacyEngine.fragmentManager.recordRequest(ctx.agentId, fragment.id);
+    }
+    const refreshedBehavioralProfile = behavioralPrivacyEngine.refreshProfile(ctx.agentId);
+    if (refreshedBehavioralProfile.correlationRisk !== 'low') {
+      securityEventEngine.emit({
+        type: 'behavior_correlation_detected',
+        severity: refreshedBehavioralProfile.correlationRisk === 'critical' ? 'critical' : 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Behavioral correlation risk detected.',
+        metadata: {
+          correlationRisk: refreshedBehavioralProfile.correlationRisk,
+          repeatedBehaviorScore: refreshedBehavioralProfile.repeatedBehaviorScore,
+          temporalPatternsDetected: refreshedBehavioralProfile.temporalPatternsDetected
+        }
+      });
+    }
+
+    // ── Persona Isolation ──
+    const rawCategoryHint =
+      ctx.input !== null && typeof ctx.input === 'object' && !Array.isArray(ctx.input) &&
+      'categoryHint' in (ctx.input as Record<string, unknown>)
+        ? (ctx.input as Record<string, unknown>)['categoryHint']
+        : undefined;
+    const VALID_CATEGORIES: readonly PersonaCategory[] = [
+      'general','finance','crypto','security','health','politics','development','research','unknown'
+    ];
+    const categoryHint: PersonaCategory =
+      typeof rawCategoryHint === 'string' && (VALID_CATEGORIES as readonly string[]).includes(rawCategoryHint)
+        ? (rawCategoryHint as PersonaCategory)
+        : 'unknown';
+
+    const isolationDecision = personaIsolationEngine.evaluatePersonaIsolation(ctx.agentId, categoryHint);
+    const activePersona = personaIsolationEngine.getOrCreatePersona(ctx.agentId, categoryHint);
+
+    if (activePersona.searchCount === 0) {
+      securityEventEngine.emit({
+        type: 'persona_created',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: `Persona created for category "${categoryHint}".`,
+        metadata: { personaId: activePersona.id, category: categoryHint }
+      });
+    }
+
+    const bpFragment = behavioralPrivacyEngine.fragmentManager.getActiveFragment(ctx.agentId);
+    if (bpFragment) {
+      personaIsolationEngine.fragmentManager.bind(activePersona.id, bpFragment.id);
+      personaIsolationEngine.personaStore.bindFragment(activePersona.id, bpFragment.id, Date.now());
+      securityEventEngine.emit({
+        type: 'persona_fragment_bound',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Persona bound to identity fragment.',
+        metadata: { personaId: activePersona.id, fragmentId: bpFragment.id }
+      });
+    }
+
+    if (isolationDecision.requiresNewFragment || isolationDecision.requiresSessionIsolation) {
+      securityEventEngine.emit({
+        type: 'interest_segmentation_triggered',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: `Interest segmentation triggered for category "${categoryHint}".`,
+        metadata: {
+          personaId: isolationDecision.personaId,
+          requiresNewFragment: isolationDecision.requiresNewFragment,
+          requiresSessionIsolation: isolationDecision.requiresSessionIsolation,
+          requiresTransportIsolation: isolationDecision.requiresTransportIsolation,
+          reason: isolationDecision.reason
+        }
+      });
+    }
+
+    if (isolationDecision.requiresBehavioralEscalation) {
+      securityEventEngine.emit({
+        type: 'persona_isolation_escalated',
+        severity: 'critical',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Persona isolation escalated due to critical correlation risk.',
+        metadata: { personaId: isolationDecision.personaId, reason: isolationDecision.reason }
+      });
+    }
+
+    personaIsolationEngine.recordPersonaSearch(ctx.agentId, categoryHint);
+
+    if (isolationDecision.requiresBehavioralEscalation) {
+      collector.emit({ source: 'persona_isolation', action: 'rotate_fragment', severity: 'high', reason: isolationDecision.reason ?? 'Persona behavioral escalation.' });
+    } else if (isolationDecision.requiresNewFragment) {
+      collector.emit({ source: 'persona_isolation', action: 'rotate_fragment', severity: 'medium', reason: isolationDecision.reason ?? 'Persona fragment rotation required.' });
+    } else {
+      collector.emit({ source: 'persona_isolation', action: 'allow', severity: 'info', reason: 'Persona isolation OK.' });
+    }
+
+    // ── Temporal Obfuscation ──
+    const temporalDecision = temporalObfuscationEngine.evaluateTemporalRisk(ctx.agentId);
+    temporalObfuscationEngine.recordExecution({ agentId: ctx.agentId });
+    const temporalProfile = temporalObfuscationEngine.getProfile(ctx.agentId)!;
+
+    if (temporalDecision.requiresSchedulingEscalation || temporalDecision.requiresBurstFragmentation) {
+      securityEventEngine.emit({
+        type: 'temporal_scheduling_escalated',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Temporal scheduling escalated due to elevated burst or budget risk.',
+        metadata: { delayMs: temporalDecision.delayMs, cadenceRisk: temporalProfile.cadenceRisk, detectedBursts: temporalProfile.detectedBursts, reason: temporalDecision.reason }
+      });
+    }
+    if (temporalDecision.requiresCadenceSmoothing) {
+      securityEventEngine.emit({
+        type: 'cadence_smoothing_applied',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Cadence smoothing applied to reduce temporal pattern risk.',
+        metadata: { delayMs: temporalDecision.delayMs, reason: temporalDecision.reason }
+      });
+    }
+    if (temporalDecision.requiresBurstFragmentation) {
+      securityEventEngine.emit({
+        type: 'burst_detected',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Burst pattern detected; fragmentation recommended.',
+        metadata: { detectedBursts: temporalProfile.detectedBursts, reason: temporalDecision.reason }
+      });
+    }
+    if (temporalDecision.requiresDelay && temporalDecision.delayMs > 0) {
+      securityEventEngine.emit({
+        type: 'temporal_spacing_applied',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Temporal spacing applied to reduce timing correlation.',
+        metadata: { delayMs: temporalDecision.delayMs, reason: temporalDecision.reason }
+      });
+    }
+    if (!temporalDecision.allowed) {
+      securityEventEngine.emit({
+        type: 'temporal_budget_exhausted',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Temporal privacy budget exhausted for this agent.',
+        metadata: { consumed: temporalProfile.temporalBudget.consumed, maxRequestsPerWindow: temporalProfile.temporalBudget.maxRequestsPerWindow, resetsAt: temporalProfile.temporalBudget.resetsAt }
+      });
+    }
+
+    const temporalObfuscationView: TemporalObfuscationView = {
+      cadenceRisk: temporalProfile.cadenceRisk,
+      delayMs: temporalDecision.delayMs,
+      requiresCadenceSmoothing: temporalDecision.requiresCadenceSmoothing,
+      requiresBurstFragmentation: temporalDecision.requiresBurstFragmentation,
+      requiresSchedulingEscalation: temporalDecision.requiresSchedulingEscalation,
+      detectedBursts: temporalProfile.detectedBursts,
+      smoothedRequests: temporalProfile.smoothedRequests,
+      budgetConsumed: temporalProfile.temporalBudget.consumed,
+      budgetRemaining: temporalProfile.temporalBudget.remaining,
+      reason: temporalDecision.reason
+    };
+
+    if (!temporalDecision.allowed) {
+      collector.emit({ source: 'temporal_obfuscation', action: 'temporary_block', severity: 'high', reason: 'Temporal privacy budget exhausted.' });
+    } else if (temporalDecision.requiresSchedulingEscalation) {
+      collector.emit({ source: 'temporal_obfuscation', action: 'cooldown', severity: 'medium', reason: temporalDecision.reason ?? 'Temporal scheduling escalation.' });
+    } else if (temporalDecision.requiresDelay) {
+      collector.emit({ source: 'temporal_obfuscation', action: 'delay', severity: 'low', reason: temporalDecision.reason ?? 'Temporal spacing required.' });
+    } else {
+      collector.emit({ source: 'temporal_obfuscation', action: 'allow', severity: 'info', reason: 'Temporal risk OK.' });
+    }
+
+    const delayMs =
+      (bpDecision.requiresDelay ? bpDecision.recommendedDelayMs ?? 0 : 0) +
+      (temporalDecision.requiresDelay ? temporalDecision.delayMs ?? 0 : 0);
+
+    return {
+      kind: 'continue',
+      effects: {
+        categoryHint,
+        delayMs,
+        requiresNewFragment: isolationDecision.requiresNewFragment,
+        requiresSessionIsolation: isolationDecision.requiresSessionIsolation,
+        temporalSchedulingEscalation: temporalDecision.requiresSchedulingEscalation,
+        criticalRisk:
+          refreshedBehavioralProfile.correlationRisk === 'critical' ||
+          isolationDecision.requiresBehavioralEscalation,
+        personaId: activePersona.id,
+        temporalObfuscationView
+      }
+    };
+  };
+
   // ── Sprint 29 — Multi-agent runtime gate & signals ──
   //
   // Emits real `multi_agent` policy signals from the agent registry state.
@@ -3106,384 +3448,33 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       severity: 'info',
       reason: `Trust level: ${trustProfile.score.level}.`
     });
-    const bpDecision: BehavioralPrivacyDecision =
-      behavioralPrivacyEngine.evaluateRequest({
-        agentId: request.agentId,
-        riskLevel: request.riskLevel as 'low' | 'medium' | 'high'
-      });
-    behavioralPrivacyEngine.recordBehavior({ agentId: request.agentId });
-
-    if (!bpDecision.allowed) {
-      securityEventEngine.emit({
-        type: 'behavioral_privacy_escalated',
-        severity: 'critical',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message:
-          'Behavioral privacy engine blocked the request due to critical correlation risk.',
-        metadata: { reason: bpDecision.reason }
-      });
-      collector.emit({
-        source: 'behavioral_privacy',
-        action: 'deny',
-        severity: 'critical',
-        reason: bpDecision.reason ?? 'behavioral_privacy_blocked'
-      });
+    // ── Shared privacy pipeline (behavioral / persona / temporal) — Sprint 32 ──
+    const privacyResult = runPrivacyPipeline(collector, {
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      riskLevel: request.riskLevel as RiskLevel,
+      input: request.input
+    });
+    if (privacyResult.kind === 'deny') {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
-        reason: bpDecision.reason ?? 'behavioral_privacy_blocked',
+        reason: privacyResult.reason,
         capabilityGraph: capabilityGraphView,
         trust: trustView
       };
       return res.status(200).json(response);
     }
-
-    // Emit behavioral privacy signal for the allowed path.
-    if (bpDecision.requiresFragmentation) {
-      collector.emit({
-        source: 'behavioral_privacy',
-        action: 'rotate_fragment',
-        severity: 'medium',
-        reason: bpDecision.reason ?? 'Behavioral fragmentation required.'
-      });
-    } else if (bpDecision.requiresDelay) {
-      collector.emit({
-        source: 'behavioral_privacy',
-        action: 'delay',
-        severity: 'low',
-        reason: bpDecision.reason ?? 'Behavioral jitter required.'
-      });
-    } else {
-      collector.emit({
-        source: 'behavioral_privacy',
-        action: 'allow',
-        severity: 'info',
-        reason: 'Behavioral privacy OK.'
-      });
-    }
-
-    if (bpDecision.requiresDelay) {
-      securityEventEngine.emit({
-        type: 'behavioral_jitter_applied',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Behavioral jitter recommended.',
-        metadata: {
-          delayMs: bpDecision.recommendedDelayMs,
-          reason: bpDecision.reason
-        }
-      });
-    }
-
-    if (bpDecision.requiresFragmentation) {
-      const fragment = behavioralPrivacyEngine.fragmentManager.rotateFragment(
-        request.agentId
-      );
-      securityEventEngine.emit({
-        type: 'behavior_fragment_rotated',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Identity fragment rotated due to elevated correlation risk.',
-        metadata: { fragmentId: fragment.id, reason: bpDecision.reason }
-      });
-    } else {
-      const fragment = behavioralPrivacyEngine.fragmentManager.getActiveFragment(
-        request.agentId
-      );
-      if (fragment.requestCount === 0) {
-        securityEventEngine.emit({
-          type: 'behavior_fragment_created',
-          severity: 'info',
-          agentId: request.agentId,
-          compartmentId: request.compartmentId,
-          requestId,
-          message: 'New identity fragment created.',
-          metadata: { fragmentId: fragment.id }
-        });
-      }
-      behavioralPrivacyEngine.fragmentManager.recordRequest(request.agentId, fragment.id);
-    }
-    const refreshedBehavioralProfile = behavioralPrivacyEngine.refreshProfile(
-      request.agentId
-    );
-    if (refreshedBehavioralProfile.correlationRisk !== 'low') {
-      securityEventEngine.emit({
-        type: 'behavior_correlation_detected',
-        severity:
-          refreshedBehavioralProfile.correlationRisk === 'critical'
-            ? 'critical'
-            : 'warning',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Behavioral correlation risk detected.',
-        metadata: {
-          correlationRisk: refreshedBehavioralProfile.correlationRisk,
-          repeatedBehaviorScore: refreshedBehavioralProfile.repeatedBehaviorScore,
-          temporalPatternsDetected:
-            refreshedBehavioralProfile.temporalPatternsDetected
-        }
-      });
-    }
-
-    // ── Persona Isolation gate (Sprint 25) ──
-    // Derive the category from the tool/input metadata. We accept an explicit
-    // `categoryHint` string on the request body (optional, never mandatory) and
-    // coerce it to a PersonaCategory; anything unknown falls back to 'unknown'.
-    const rawCategoryHint =
-      request.input !== null &&
-      typeof request.input === 'object' &&
-      !Array.isArray(request.input) &&
-      'categoryHint' in (request.input as Record<string, unknown>)
-        ? (request.input as Record<string, unknown>)['categoryHint']
-        : undefined;
-    const VALID_CATEGORIES: readonly PersonaCategory[] = [
-      'general','finance','crypto','security','health','politics','development','research','unknown'
-    ];
-    const categoryHint: PersonaCategory =
-      typeof rawCategoryHint === 'string' &&
-      (VALID_CATEGORIES as readonly string[]).includes(rawCategoryHint)
-        ? (rawCategoryHint as PersonaCategory)
-        : 'unknown';
-
-    // Evaluate isolation before mutating state.
-    const isolationDecision = personaIsolationEngine.evaluatePersonaIsolation(
-      request.agentId,
-      categoryHint
-    );
-
-    // Ensure the persona exists / is rotated as needed, then record the search.
-    const activePersona = personaIsolationEngine.getOrCreatePersona(
-      request.agentId,
-      categoryHint
-    );
-
-    // Emit persona_created when this is a freshly-created persona (no searches).
-    if (activePersona.searchCount === 0) {
-      securityEventEngine.emit({
-        type: 'persona_created',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: `Persona created for category "${categoryHint}".`,
-        metadata: { personaId: activePersona.id, category: categoryHint }
-      });
-    }
-
-    // Bind fragment to persona.
-    const bpFragment = behavioralPrivacyEngine.fragmentManager.getActiveFragment(
-      request.agentId
-    );
-    if (bpFragment) {
-      personaIsolationEngine.fragmentManager.bind(activePersona.id, bpFragment.id);
-      personaIsolationEngine.personaStore.bindFragment(activePersona.id, bpFragment.id, Date.now());
-      securityEventEngine.emit({
-        type: 'persona_fragment_bound',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Persona bound to identity fragment.',
-        metadata: { personaId: activePersona.id, fragmentId: bpFragment.id }
-      });
-    }
-
-    // Emit interest_segmentation_triggered when the decision mandates action.
-    if (isolationDecision.requiresNewFragment || isolationDecision.requiresSessionIsolation) {
-      securityEventEngine.emit({
-        type: 'interest_segmentation_triggered',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: `Interest segmentation triggered for category "${categoryHint}".`,
-        metadata: {
-          personaId: isolationDecision.personaId,
-          requiresNewFragment: isolationDecision.requiresNewFragment,
-          requiresSessionIsolation: isolationDecision.requiresSessionIsolation,
-          requiresTransportIsolation: isolationDecision.requiresTransportIsolation,
-          reason: isolationDecision.reason
-        }
-      });
-    }
-
-    // Emit persona_isolation_escalated on critical correlation or behavioral escalation.
-    if (isolationDecision.requiresBehavioralEscalation) {
-      securityEventEngine.emit({
-        type: 'persona_isolation_escalated',
-        severity: 'critical',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Persona isolation escalated due to critical correlation risk.',
-        metadata: { personaId: isolationDecision.personaId, reason: isolationDecision.reason }
-      });
-    }
-
-    // Record the search on the persona (increments searchCount, recomputes risk).
-    personaIsolationEngine.recordPersonaSearch(request.agentId, categoryHint);
-
-    // Emit persona isolation signal.
-    if (isolationDecision.requiresBehavioralEscalation) {
-      collector.emit({
-        source: 'persona_isolation',
-        action: 'rotate_fragment',
-        severity: 'high',
-        reason: isolationDecision.reason ?? 'Persona behavioral escalation.'
-      });
-    } else if (isolationDecision.requiresNewFragment) {
-      collector.emit({
-        source: 'persona_isolation',
-        action: 'rotate_fragment',
-        severity: 'medium',
-        reason: isolationDecision.reason ?? 'Persona fragment rotation required.'
-      });
-    } else {
-      collector.emit({
-        source: 'persona_isolation',
-        action: 'allow',
-        severity: 'info',
-        reason: 'Persona isolation OK.'
-      });
-    }
-
-    // ── Temporal Obfuscation gate (Sprint 26) ──
-    // Evaluates cadence, burst, and budget risk for the agent and emits audit
-    // events. Does NOT block the request — produces delay metadata only.
-    // Records the execution after evaluation so recordExecution reflects the
-    // current request.
-    const temporalDecision = temporalObfuscationEngine.evaluateTemporalRisk(request.agentId);
-    temporalObfuscationEngine.recordExecution({ agentId: request.agentId });
-    const temporalProfile = temporalObfuscationEngine.getProfile(request.agentId)!;
-
-    if (temporalDecision.requiresSchedulingEscalation || temporalDecision.requiresBurstFragmentation) {
-      securityEventEngine.emit({
-        type: 'temporal_scheduling_escalated',
-        severity: 'warning',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Temporal scheduling escalated due to elevated burst or budget risk.',
-        metadata: {
-          delayMs: temporalDecision.delayMs,
-          cadenceRisk: temporalProfile.cadenceRisk,
-          detectedBursts: temporalProfile.detectedBursts,
-          reason: temporalDecision.reason
-        }
-      });
-    }
-
-    if (temporalDecision.requiresCadenceSmoothing) {
-      securityEventEngine.emit({
-        type: 'cadence_smoothing_applied',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Cadence smoothing applied to reduce temporal pattern risk.',
-        metadata: { delayMs: temporalDecision.delayMs, reason: temporalDecision.reason }
-      });
-    }
-
-    if (temporalDecision.requiresBurstFragmentation) {
-      securityEventEngine.emit({
-        type: 'burst_detected',
-        severity: 'warning',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Burst pattern detected; fragmentation recommended.',
-        metadata: {
-          detectedBursts: temporalProfile.detectedBursts,
-          reason: temporalDecision.reason
-        }
-      });
-    }
-
-    if (temporalDecision.requiresDelay && temporalDecision.delayMs > 0) {
-      securityEventEngine.emit({
-        type: 'temporal_spacing_applied',
-        severity: 'info',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Temporal spacing applied to reduce timing correlation.',
-        metadata: { delayMs: temporalDecision.delayMs, reason: temporalDecision.reason }
-      });
-    }
-
-    if (!temporalDecision.allowed) {
-      securityEventEngine.emit({
-        type: 'temporal_budget_exhausted',
-        severity: 'warning',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: 'Temporal privacy budget exhausted for this agent.',
-        metadata: {
-          consumed: temporalProfile.temporalBudget.consumed,
-          maxRequestsPerWindow: temporalProfile.temporalBudget.maxRequestsPerWindow,
-          resetsAt: temporalProfile.temporalBudget.resetsAt
-        }
-      });
-    }
-
-    const temporalObfuscationView: TemporalObfuscationView = {
-      cadenceRisk: temporalProfile.cadenceRisk,
-      delayMs: temporalDecision.delayMs,
-      requiresCadenceSmoothing: temporalDecision.requiresCadenceSmoothing,
-      requiresBurstFragmentation: temporalDecision.requiresBurstFragmentation,
-      requiresSchedulingEscalation: temporalDecision.requiresSchedulingEscalation,
-      detectedBursts: temporalProfile.detectedBursts,
-      smoothedRequests: temporalProfile.smoothedRequests,
-      budgetConsumed: temporalProfile.temporalBudget.consumed,
-      budgetRemaining: temporalProfile.temporalBudget.remaining,
-      reason: temporalDecision.reason
-    };
-
-    // Emit temporal obfuscation signal.
-    if (!temporalDecision.allowed) {
-      collector.emit({
-        source: 'temporal_obfuscation',
-        action: 'temporary_block',
-        severity: 'high',
-        reason: 'Temporal privacy budget exhausted.'
-      });
-    } else if (temporalDecision.requiresSchedulingEscalation) {
-      collector.emit({
-        source: 'temporal_obfuscation',
-        action: 'cooldown',
-        severity: 'medium',
-        reason: temporalDecision.reason ?? 'Temporal scheduling escalation.'
-      });
-    } else if (temporalDecision.requiresDelay) {
-      collector.emit({
-        source: 'temporal_obfuscation',
-        action: 'delay',
-        severity: 'low',
-        reason: temporalDecision.reason ?? 'Temporal spacing required.'
-      });
-    } else {
-      collector.emit({
-        source: 'temporal_obfuscation',
-        action: 'allow',
-        severity: 'info',
-        reason: 'Temporal risk OK.'
-      });
-    }
+    const privacyEffects = privacyResult.effects;
+    const categoryHint = privacyEffects.categoryHint;
+    const temporalObfuscationView = privacyEffects.temporalObfuscationView;
 
     const fingerprintState = applyTransportFingerprint({
       agentId: request.agentId,
       compartmentId: request.compartmentId,
       requestId,
-      personaChanged: isolationDecision.requiresNewFragment,
-      temporalEscalation: temporalDecision.requiresSchedulingEscalation,
+      personaChanged: privacyEffects.requiresNewFragment,
+      temporalEscalation: privacyEffects.temporalSchedulingEscalation,
       sensitiveCategoryDetected: isSensitivePersonaCategory(categoryHint)
     });
 
@@ -3836,7 +3827,11 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const networkOutcome = evaluateNetworkIsolationGate(
       collector,
       { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
-      { compartmentId: request.compartmentId, personaId: categoryHint ?? undefined }
+      {
+        compartmentId: request.compartmentId,
+        personaId: categoryHint ?? undefined,
+        criticalRisk: privacyEffects.criticalRisk
+      }
     );
     networkAugment.networkIsolation = networkOutcome.view;
     if (networkOutcome.kind === 'deny') {
@@ -4049,7 +4044,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const mustRotateSession =
       routing.shouldRotateSession ||
       privacy.action === 'rotate_session' ||
-      graphForcesRotation;
+      graphForcesRotation ||
+      privacyEffects.requiresSessionIsolation ||
+      networkOutcome.view.shouldRotate;
     const sessionsBefore = sessionManager.size();
     const session = mustRotateSession
       ? sessionManager.rotateSession(request.compartmentId)
@@ -4115,6 +4112,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         inputSizeBytes: inputDescriptor.inputSizeBytes
       }
     });
+
+    // Sprint 32 — apply the REAL, bounded temporal/behavioral delay (no-op when
+    // executionDelayEnabled is false, the default).
+    const appliedDelayMs = await applyExecutionDelay(privacyEffects.delayMs);
 
     const result = await executionEngine.execute(executionRequest);
 
@@ -4267,6 +4268,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       privacyBoundary: privacyView,
       execution,
       temporalObfuscation: temporalObfuscationView,
+      appliedDelayMs,
       fingerprint: {
         activeFingerprintId: fingerprintState.profile.activeFingerprintId,
         rotationCount: fingerprintState.profile.rotationCount,
@@ -4321,7 +4323,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const { request } = validated;
     const requestId = randomUUID();
     const inputDescriptor = describeInput(request.input);
-    const categoryHint = extractPersonaCategory(request.input);
+    // Sprint 32 — categoryHint now comes from the shared privacy pipeline below
+    // (same category logic as execute-mock), not a separate extractor.
 
     // Sprint 29 — per-request policy-signal collector (parity with execute-mock).
     // Gates emit signals here; the response interceptor evaluates them into the
@@ -4520,6 +4523,27 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     collector.emit({ source: 'trust_reputation', action: 'allow', severity: 'info', reason: `Trust level: ${trustProfile.score.level}.` });
 
+    // ── Shared privacy pipeline (behavioral / persona / temporal) — Sprint 32 ──
+    // Same gates, signals, audit events, and real engine mutations as execute-mock.
+    const privacyResult = runPrivacyPipeline(collector, {
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId,
+      riskLevel: request.riskLevel as RiskLevel,
+      input: request.input
+    });
+    if (privacyResult.kind === 'deny') {
+      const response: ExecuteCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: privacyResult.reason,
+        capabilityGraph: capabilityGraphView,
+        trust: trustView
+      };
+      return res.status(200).json(response);
+    }
+    const privacyEffects = privacyResult.effects;
+    const categoryHint = privacyEffects.categoryHint;
+
     // ── Defense pipeline ─────────────────────────────────────────────────────
     type DefenseTerminal =
       | { kind: 'respond'; body: ExecuteCapabilityHttpResponse }
@@ -4712,7 +4736,11 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const networkOutcome = evaluateNetworkIsolationGate(
       collector,
       { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
-      { compartmentId: request.compartmentId, personaId: categoryHint ?? undefined }
+      {
+        compartmentId: request.compartmentId,
+        personaId: categoryHint ?? undefined,
+        criticalRisk: privacyEffects.criticalRisk
+      }
     );
     networkAugment.networkIsolation = networkOutcome.view;
     if (networkOutcome.kind === 'deny') {
@@ -4883,6 +4911,11 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       agentId: request.agentId,
       compartmentId: request.compartmentId,
       requestId,
+      // Sprint 32 — tie the fingerprint to persona/route: rotate it when the
+      // persona forces a new fragment, on temporal escalation, or when the relay
+      // route itself rotated (route → fingerprint linkage).
+      personaChanged: privacyEffects.requiresNewFragment || networkOutcome.view.shouldRotate,
+      temporalEscalation: privacyEffects.temporalSchedulingEscalation,
       sensitiveCategoryDetected: isSensitivePersonaCategory(categoryHint)
     });
 
@@ -4894,7 +4927,14 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     }
 
     // ── Session ──────────────────────────────────────────────────────────────
-    const mustRotateExec = routingExec.shouldRotateSession || privacyExec.action === 'rotate_session' || graphForcesRotation;
+    // Sprint 32 — persona session-isolation and a relay-route rotation now REALLY
+    // rotate the session (the new sessionId is what the actual transport uses).
+    const mustRotateExec =
+      routingExec.shouldRotateSession ||
+      privacyExec.action === 'rotate_session' ||
+      graphForcesRotation ||
+      privacyEffects.requiresSessionIsolation ||
+      networkOutcome.view.shouldRotate;
     const sessionsBefore2 = sessionManager.size();
     const sessionExec = mustRotateExec
       ? sessionManager.rotateSession(request.compartmentId)
@@ -4930,6 +4970,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       message: 'Execution started.',
       metadata: { tool: request.tool, riskLevel: request.riskLevel, transportKind: resolvedKind, inputType: inputDescriptor.inputType, inputSizeBytes: inputDescriptor.inputSizeBytes }
     });
+
+    // Sprint 32 — apply the REAL, bounded temporal/behavioral delay before
+    // execution (no-op when executionDelayEnabled is false, the default).
+    const appliedDelayMsExec = await applyExecutionDelay(privacyEffects.delayMs);
 
     // Select the appropriate execution engine: real (SearXNG) or mock.
     const activeEngine: ExecutionEngine =
@@ -5032,6 +5076,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       routing: toRoutingDecisionView(routingExec),
       privacyBoundary: privacyViewExec,
       execution: executionViewExec,
+      // Sprint 32 — execute now surfaces the temporal-obfuscation view (parity
+      // with execute-mock); `appliedDelayMs` reports the REAL delay awaited.
+      temporalObfuscation: privacyEffects.temporalObfuscationView,
+      appliedDelayMs: appliedDelayMsExec,
       fingerprint: {
         activeFingerprintId: fingerprintStateExec.profile.activeFingerprintId,
         rotationCount: fingerprintStateExec.profile.rotationCount,

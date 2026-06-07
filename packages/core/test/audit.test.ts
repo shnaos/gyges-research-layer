@@ -202,3 +202,35 @@ describe('SecurityEventEngine', () => {
     expect(engine.getEvent(emitted.id)?.metadata?.riskLevel).toBe('low');
   });
 });
+
+// Sprint 32 — bounded audit store (memory hardening).
+describe('AuditStore bounding (Sprint 32)', () => {
+  it('defaults to a high cap and does not evict under normal load', () => {
+    const store = new AuditStore();
+    expect(store.capacity()).toBe(50_000);
+    for (let i = 0; i < 100; i++) store.append(event({ id: `e${i}`, timestamp: i }));
+    expect(store.size()).toBe(100);
+    expect(store.evicted()).toBe(0);
+  });
+
+  it('evicts oldest events FIFO beyond the cap', () => {
+    const store = new AuditStore({ maxEvents: 3 });
+    for (let i = 0; i < 5; i++) store.append(event({ id: `e${i}`, timestamp: i, message: `m${i}` }));
+    expect(store.size()).toBe(3);
+    expect(store.evicted()).toBe(2);
+    expect(store.list().map((e) => e.id)).toEqual(['e2', 'e3', 'e4']);
+  });
+
+  it('clamps a non-positive cap to 1 (always bounded)', () => {
+    expect(new AuditStore({ maxEvents: 0 }).capacity()).toBe(1);
+    expect(new AuditStore({ maxEvents: -10 }).capacity()).toBe(1);
+  });
+
+  it('honours maxEvents passed through the SecurityEventEngine', () => {
+    const engine = new SecurityEventEngine({ maxEvents: 2 });
+    for (let i = 0; i < 4; i++) {
+      engine.emit({ type: 'execution_started', severity: 'info', message: `m${i}` });
+    }
+    expect(engine.size()).toBe(2);
+  });
+});
