@@ -31,12 +31,12 @@ artificially. Companion docs: `pipeline-mapping.md`, `transport-reality.md`,
 | SearXNG transport | **local-prod-ready when configured** | real loopback HTTP, fail-closed; **off by default** |
 | Mock execution | **demo-ready** | explicit simulation |
 | Transport Fingerprint | **demo-ready** | real header assignment; only hits wire when SearXNG on |
-| Behavioral Privacy | **research-only** | runs only on execute-mock; **no effect on real `execute`** |
-| Persona Isolation | **research-only** | runs only on execute-mock |
-| Temporal Obfuscation | **metadata-only** | recommendations only; server never sleeps |
-| Network Isolation (relays/routes) | **metadata-only** | logical abstraction; no real network effect |
+| Behavioral Privacy | **demo-ready** (Sprint 32) | now runs on **both** execute & execute-mock; real fragment rotation; critical risk → real session/fingerprint rotation |
+| Persona Isolation | **demo-ready** (Sprint 32) | now runs on **both**; real persona create/bind; drives real session & fingerprint rotation |
+| Temporal Obfuscation | **demo-ready** (Sprint 32) | runs on **both**; computed delay is **really awaited** when `executionDelayEnabled` (default off); advisory otherwise |
+| Network Isolation (relays/routes) | **metadata-only** | logical abstraction; **no real network effect** — BUT a route rotation now really drives session + fingerprint rotation (Sprint 32) |
 | DNS Isolation | **metadata-only** | intent model; no resolver |
-| Audit trail | **demo-ready** | real + complete, but **unbounded store** |
+| Audit trail | **local-prod-ready** (Sprint 32) | real + complete, now **bounded** (FIFO, default 50k) |
 | CLI | **local-prod-ready** | broad command coverage, `--json`, fail-closed errors |
 | SDK | **local-prod-ready** | typed client, tri-state results, fail-closed |
 
@@ -48,8 +48,8 @@ artificially. Companion docs: `pipeline-mapping.md`, `transport-reality.md`,
 | "local-first, no telemetry, no cloud" | **Consistent** — no network primitive outside the SearXNG adapter + local SDK/CLI clients. |
 | "deny-by-default / fail-closed" | **Consistent** — firewall, transport, network-isolation, config validation all fail-closed. |
 | Sprint 30 "reduces network correlation" | **Was overclaimed** — it is logical/metadata-only with mock-by-default transport. **Corrected** in `mock-boundaries.md` + a reconciliation note in `docs/network-isolation.md`. |
-| Behavioral/persona/temporal as active privacy layers | **Risk of overread** — they are real engines but **do not run on the real `execute` path**. Now documented as a KNOWN GAP and pinned by test. |
-| Temporal/jitter "applied" | **Risk of overread** — delays are advisory; the server does not enforce timing. Documented. |
+| Behavioral/persona/temporal as active privacy layers | **Resolved (Sprint 32)** — they now run on the real `execute` path with real engine mutations (the Sprint 31 gap is closed). |
+| Temporal/jitter "applied" | **Resolved (Sprint 32)** — the delay is now really awaited when `executionDelayEnabled`; advisory only when disabled (the default). No longer advisory-only as a capability. |
 
 No dangerous "anonymity system" claim was found in the docs. The two real
 inconsistencies (network-correlation framing; advisory-vs-enforced) are reconciled
@@ -84,9 +84,11 @@ It is **not** production-ready as a multi-tenant, long-running, many-agent servi
 
 ## Top remediation candidates (future sprints — NOT done here)
 
-1. Bound/evict the audit store and capability graph (or add TTL/restart guidance).
-2. Decide intentionally whether behavioral/persona/temporal should run on `execute`
-   (close or formally accept the gap).
-3. Unify (or explicitly document per-engine) the isolation key.
-4. Optionally enforce advisory delays, or rename them to make "advisory" explicit
-   in the API.
+1. ~~Bound/evict the audit store~~ **DONE (Sprint 32)** — audit store is now
+   bounded (FIFO, 50k). Capability-graph node/edge GC still deferred (paths
+   bounded by `maxPathLength`).
+2. ~~Decide whether behavioral/persona/temporal run on `execute`~~ **DONE
+   (Sprint 32)** — ported to `execute` via the shared privacy pipeline.
+3. Unify (or explicitly document per-engine) the isolation key. *(still open)*
+4. ~~Enforce advisory delays~~ **DONE (Sprint 32)** — real bounded delay,
+   opt-in via `executionDelayEnabled`.

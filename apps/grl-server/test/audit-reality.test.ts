@@ -114,20 +114,20 @@ describe('execute pipeline reality', () => {
     }
   });
 
-  // KNOWN GAP — NOT a guarantee. The behavioral-privacy, persona-isolation, and
-  // temporal-obfuscation engines run ONLY on execute-mock; the real execute path
-  // does not invoke them. Documented in docs/audits/production-readiness.md and
-  // docs/audits/pipeline-mapping.md. This test pins the current reality so any
-  // future change (closing the gap) is a conscious, visible decision.
-  it('KNOWN GAP: behavioral/persona/temporal are execute-mock-only (absent on execute)', async () => {
+  // Sprint 32 CONVERGENCE — the Sprint 31 KNOWN GAP is now CLOSED. The
+  // behavioral-privacy, persona-isolation, and temporal-obfuscation gates run on
+  // the real `execute` path via the shared runPrivacyPipeline helper, with real
+  // engine mutations (not metadata-only). This test now asserts PRESENCE on both
+  // endpoints — the inverse of the Sprint 31 gap assertion.
+  it('CONVERGED: behavioral/persona/temporal run on execute (and execute-mock)', async () => {
     const { base } = await startApp();
     const mock = await post(base, '/v1/capabilities/execute-mock', ALLOW_BODY);
     const real = await post(base, '/v1/capabilities/execute', ALLOW_BODY);
     const mockSet = new Set(sources(mock.json));
     const realSet = new Set(sources(real.json));
     for (const s of ['behavioral_privacy', 'persona_isolation', 'temporal_obfuscation']) {
-      expect(mockSet.has(s)).toBe(true); // present on the mock path
-      expect(realSet.has(s)).toBe(false); // ABSENT on the real path (the gap)
+      expect(mockSet.has(s)).toBe(true);
+      expect(realSet.has(s)).toBe(true); // now PRESENT on the real path
     }
   });
 });

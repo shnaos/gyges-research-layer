@@ -48,7 +48,7 @@ everything. Stores classified:
 ### Unbounded by entity count / no TTL deletion (growth risks)
 | Store | Risk |
 |---|---|
-| **Audit store `events[]`** (`audit/store.ts`) | **No cap, no TTL** — every security event retained for process life; query only slices at read-time. ~10–15 events per execute. **Largest growth risk.** |
+| ~~Audit store `events[]`~~ | **BOUNDED (Sprint 32)** — FIFO eviction at `maxEvents` (default 50,000). Query semantics unchanged. No longer a growth risk. |
 | **Capability Graph `nodes` / `edges`** | **Unbounded** — `nodes.set`/`edges.set` are never deleted/pruned; ~2 nodes + 1 edge are added per successful execute (`recordCapabilityRequest`+`addNode`+`addEdge`), plus nodes/edges from transitions (including a minimal node + `blocked` edge on blocked ones). Grows with traffic. |
 | Capability Graph `paths` (per compartment) | **Bounded** in effect: a path stops advancing once its length reaches `maxPathLength` (further transitions are blocked and do not advance the path). The `nodes`/`edges` stores above are the real growth, not `paths`. |
 | Session Manager `sessions`/`byCompartment` | TTL **lazy-expiry transitions state but does not delete** records → grows by (compartments × rotations). |

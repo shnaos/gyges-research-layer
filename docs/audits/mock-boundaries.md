@@ -28,9 +28,9 @@ layer is mistaken for more than it is. Verified in code.
 | Execution Engine (mock) | execution | synthetic deterministic results; **no network**. |
 | Execution Engine (SearXNG) | execution + network | real loopback HTTP; **off by default**. |
 | Transport Fingerprint | logical runtime + (network when SearXNG on) | assigns headers in-memory; only reaches the wire if SearXNG executes. |
-| **Behavioral Privacy** | metadata-only on real path | runs **only on execute-mock**; correlation risk + recommendations. No effect on `execute`. |
-| **Persona Isolation** | metadata-only on real path | runs **only on execute-mock**. No effect on `execute`. |
-| **Temporal Obfuscation** | metadata-only | computes delay/cooldown **recommendations**; the server never sleeps (no `setTimeout`). Advisory even on execute-mock. |
+| Behavioral Privacy | logical runtime (Sprint 32) | now runs on **both** execute & execute-mock; real fragment rotation; critical risk → real session/fingerprint rotation. |
+| Persona Isolation | logical runtime (Sprint 32) | now runs on **both**; real persona create/bind/recordSearch; drives real session & fingerprint rotation. |
+| Temporal Obfuscation | logical runtime + real timing when enabled (Sprint 32) | computes deterministic delay; the server **really awaits** it when `executionDelayEnabled` (default off), bounded by `maxExecutionDelayMs`. Advisory when disabled. |
 | **Network Isolation (Sprint 30)** | logical/metadata-only | logical relay/route abstraction. **No real Tor/proxy/VPN/SOCKS/DNS/egress.** Reduces *logical/runtime* correlation only; routes/DNS scopes are opaque metadata. |
 | DNS Isolation Policy | metadata-only | intent model; **no real DNS resolver**. |
 | Runtime Policy Orchestrator | metadata-only | composite decision is **informational**; per-gate decisions enforce. |
@@ -39,11 +39,15 @@ layer is mistaken for more than it is. Verified in code.
 
 ## Things that are recommendations, not enforcement
 
-- **All `delayMs` / `requiresDelay` / temporal cooldown / behavioral jitter** —
-  surfaced as metadata; the server applies no wait.
+- **`delayMs` / temporal cooldown / behavioral jitter** — Sprint 32: the primary
+  pre-execution delay is now **really awaited** when `executionDelayEnabled`
+  (default off). When disabled it is advisory. Cooldown/budget signals remain
+  advisory (surfaced via runtimePolicy, not hard-enforced).
 - **The orchestrator `runtimePolicy` block** — informational composite.
 - **`networkIsolation` block + relay rotation** — logical metadata; changes no
-  real route (there is no real route).
+  real *network* route. Sprint 32: a relay-route rotation now really drives
+  **session + fingerprint rotation**, so the logical route is consumed by the
+  execution path (not just surfaced).
 
 ## Stubs / placeholders / simulation
 

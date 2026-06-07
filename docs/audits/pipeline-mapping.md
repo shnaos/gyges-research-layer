@@ -26,9 +26,9 @@ execute-mock, 0× in execute**).
 | capability_graph | ✅ | ✅ | real (blocks/approves/forces rotation; **records nodes/edges per request — unbounded, see runtime-coherence.md**) |
 | multi_agent | ✅ | ✅ | real (deny/approval/quota from registry state) |
 | trust_reputation | ✅ | ✅ | real (quarantine→deny, restricted→approval) |
-| behavioral_privacy | ❌ **GAP** | ✅ | execute-mock only; **no effect on real path** |
-| persona_isolation | ❌ **GAP** | ✅ | execute-mock only; **no effect on real path** |
-| temporal_obfuscation | ❌ **GAP** | ✅ | execute-mock only; delay is **advisory** (see below) |
+| behavioral_privacy | ✅ (Sprint 32) | ✅ | **real** on both — correlation eval + fragment rotation (in-memory) |
+| persona_isolation | ✅ (Sprint 32) | ✅ | **real** on both — persona create/bind + recordSearch; drives session/fingerprint rotation |
+| temporal_obfuscation | ✅ (Sprint 32) | ✅ | **real** on both — and the computed delay is now actually awaited when `executionDelayEnabled` (default off) |
 | adaptive_defense (+ rate_limit) | ✅ | ✅ | real (cooldown/temp-block/approval/escalate) |
 | capability_firewall | ✅ | ✅ | real (deny-by-default allow/deny/confirm) |
 | network_isolation | ✅ | ✅ | logical/metadata (route assign/rotate; fail-closed) — **no real packet effect** |
@@ -49,26 +49,31 @@ capability_graph → multi_agent → trust → behavioral_privacy → persona_is
 → privacy_boundary → session → execution(mock) → sandbox(if any) → audit → orchestrator
 ```
 
-`execute` runs the same spine **minus** behavioral_privacy, persona_isolation,
-and temporal_obfuscation, and selects mock-or-SearXNG at execution.
+**Sprint 32 update:** `execute` now runs the **same** behavioral_privacy /
+persona_isolation / temporal_obfuscation gates as execute-mock (via the shared
+`runPrivacyPipeline` helper), with real engine mutations. The gate SETS and
+SIGNALS have converged; the only intended difference is the transport
+(mock vs SearXNG) and a minor residual gate-ordering difference (execute computes
+network-isolation before transport-fingerprint, so it links route→fingerprint;
+execute-mock computes fingerprint before network). See `runtime-convergence.md`.
 
 ## Two facts that change how the pipeline should be read
 
-1. **Recommendations are not enforced timing.** `apps/grl-server/src/local-api.ts`
-   contains **no `setTimeout`/sleep around execution**. Temporal-obfuscation
-   delays, behavioral jitter, and the orchestrator's `requiresDelay`/`delayMs`
-   are **surfaced to the caller as metadata** — the server never actually waits.
-   Enforcing the delay is the agent/operator's responsibility.
-   *(Scope: verified for the server; the mock adapter's internals were not
-   inspected and do not need to be.)*
+1. **Delays are now REALLY enforced when enabled (Sprint 32).** The server now
+   `await`s a bounded `applyExecutionDelay(delayMs)` before execution. The delay
+   duration is deterministic (from the temporal/behavioral gates); the wait is a
+   real, event-loop-friendly `setTimeout`, capped by `maxExecutionDelayMs`
+   (default 2000). It is **OFF by default** (`executionDelayEnabled=false`) so
+   tests/CI stay fast; enabling it is a privacy knob, not a security gate. When
+   off, delays remain advisory metadata as before.
 
 2. **The composite `runtimePolicy` decision is informational.** Each gate already
    enforces its own decision inline (deny/approval/rotation). The orchestrator
    aggregates and explains; it does not re-gate execution.
 
-## KNOWN GAP (pinned by test)
+## KNOWN GAP — CLOSED in Sprint 32
 
-`apps/grl-server/test/audit-reality.test.ts` contains an explicitly-named
-`KNOWN GAP` test asserting behavioral/persona/temporal are absent from `execute`.
-It exists to make any future change a conscious decision — it is **not** an
-endorsement that the gap is correct. See `production-readiness.md`.
+The Sprint 31 gap (behavioral/persona/temporal absent from `execute`) is now
+**closed**. `apps/grl-server/test/audit-reality.test.ts` asserts the inverse —
+those three sources are **present on both** endpoints (the `CONVERGED` test). See
+`runtime-convergence.md` for what was ported and what remains metadata-only.
