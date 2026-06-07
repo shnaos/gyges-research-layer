@@ -23,7 +23,9 @@
     "smoke-test": "tsx scripts/smoke-test.ts",
     "release-check": "tsx scripts/release-check.ts",
     "validate:exports": "tsx scripts/validate-package-exports.ts",
-    "validate:security-docs": "tsx scripts/validate-security-docs.ts"
+    "validate:security-docs": "tsx scripts/validate-security-docs.ts",
+    "audit:coherence": "tsx scripts/audit-runtime-coherence.ts",
+    "audit:mocks": "tsx scripts/audit-mock-boundaries.ts"
   },
   "license": "MIT",
   "dependencies": {

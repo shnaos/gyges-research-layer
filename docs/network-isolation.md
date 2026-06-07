@@ -1,5 +1,15 @@
 # Privacy Transport Relay & Network Isolation Layer (Sprint 30)
 
+> **Sprint 31 audit reconciliation.** This layer is **metadata / logical only**.
+> Because the real transport (SearXNG) is **disabled by default** and the active
+> server applies routes only as opaque metadata (no real Tor/proxy/VPN/SOCKS/DNS/
+> egress), the correlation reduction it provides today is **logical/runtime only**
+> (stable per-compartment route ids, rotation signals, audit trail) — **not**
+> real network-level unlinkability. Any wording suggesting a *network* effect
+> should be read as *logical/runtime* effect. See
+> [`docs/audits/mock-boundaries.md`](./audits/mock-boundaries.md) and
+> [`docs/audits/transport-reality.md`](./audits/transport-reality.md).
+
 Sprint 30 adds GRL's first **network privacy layer**: a purely **logical**
 relay / route abstraction with compartment-level route separation, a DNS
 isolation *metadata model*, and deterministic relay rotation policies.
