@@ -484,3 +484,62 @@ grl runtime policy last-decision    # show last composite decision
 ```
 
 See [`docs/runtime-policy-orchestrator.md`](docs/runtime-policy-orchestrator.md).
+
+## Real Execute Orchestrator Integration & Signal Parity (Sprint 29)
+
+Sprint 29 wires the Runtime Policy Orchestrator into the **real**
+`POST /v1/capabilities/execute` endpoint, achieving full parity with
+`execute-mock`:
+
+- both endpoints collect gate signals through a shared per-request
+  `PolicySignalCollector` and return a `runtimePolicy` block on **every** decision
+  path (allowed, denied, pending) — even when a gate short-circuits before
+  execution;
+- for the same authorised request the **common signal sources** match across both
+  endpoints; the only difference is the transport (mock vs SearXNG when enabled);
+- the `multi_agent` source now emits real signals (registered / quota-exceeded /
+  restricted / evicted);
+- the orchestrator's signal inspection buffer is **bounded** (FIFO eviction,
+  default 500) — memory can never grow without bound, and a
+  `runtime_policy_signal_evicted` audit event records evictions;
+- the signals endpoint, CLI, and SDK gain `source` / `action` / `severity` /
+  `limit` filters (invalid values are rejected fail-closed with HTTP 400).
+
+```bash
+grl runtime policy signals --source multi_agent --severity high --limit 20
+```
+
+No new transport, browser, Tor/proxy, crawler, DB/Redis, or AI/ML is introduced —
+the only real transport remains SearXNG. See
+[`docs/runtime-policy-orchestrator.md`](docs/runtime-policy-orchestrator.md#sprint-29--execute-parity-bounded-buffer-and-filters).
+
+## Privacy Transport Relay & Network Isolation Layer (Sprint 30)
+
+Sprint 30 adds GRL's first **network privacy layer** — a purely **logical**
+relay / route abstraction that reduces *unnecessary* cross-correlation between
+outbound research activities (cross-persona interest aggregation, implicit route
+reuse, trivially stable network signatures):
+
+- each compartment is bound to a stable, **isolated** logical relay route — no
+  cross-compartment route reuse;
+- routes rotate deterministically on persona / category change, critical risk,
+  or an assignment ceiling;
+- a **DNS isolation metadata model** records operator intent (per compartment /
+  persona / fragment) — there is no real DNS resolver;
+- `execute` and `execute-mock` responses include a `networkIsolation` block, and
+  a `network_isolation` runtime signal feeds the policy orchestrator;
+- fail-closed: a quarantined compartment, disabled transport, or unavailable
+  relay denies the request.
+
+This is **metadata only**. There is no real Tor, proxy, VPN, SOCKS, DNS, browser,
+or cloud relay, and no IP / host / URL / DNS name / credential is ever stored.
+GRL is **NOT** an anonymity network, does **NOT** replace Tor, and makes **NO**
+promise of invisibility, anti-forensics, or anti-detection.
+
+```bash
+grl network relays
+grl network routes --limit 20
+grl network isolation
+```
+
+See [`docs/network-isolation.md`](docs/network-isolation.md).

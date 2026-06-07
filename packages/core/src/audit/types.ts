@@ -104,7 +104,12 @@ export type SecurityEventType =
   | 'user_agent_rotated'
   | 'runtime_policy_evaluated'
   | 'runtime_policy_conflict_detected'
-  | 'runtime_policy_decision_applied';
+  | 'runtime_policy_decision_applied'
+  | 'runtime_policy_signal_evicted'
+  | 'relay_route_assigned'
+  | 'relay_route_rotated'
+  | 'network_isolation_enforced'
+  | 'network_isolation_denied';
 
 /**
  * A single, immutable security event.

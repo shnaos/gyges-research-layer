@@ -22,6 +22,7 @@ export const DEFAULT_COMPOSITE_PRIVACY_POLICY: CompositePrivacyPolicy = {
     'trust_reputation',
     'adaptive_defense',
     'privacy_boundary',
+    'network_isolation',
     'capability_graph',
     'multi_agent',
     'transport_policy',

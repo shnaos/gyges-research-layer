@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import express from 'express';
+import express, { type Response as ExpressResponse } from 'express';
 import {
   ApprovalQueue,
   ApprovalRequest,
@@ -114,9 +114,11 @@ import {
   type FingerprintProfile,
   type HeaderIsolationPolicy,
   RuntimePolicyOrchestrator,
-  createSignal,
-  type PolicySignal,
-  type CompositeRuntimeDecision
+  PolicySignalCollector,
+  type CompositeRuntimeDecision,
+  NetworkIsolationEngine,
+  type RouteSelectionDecision,
+  type IsolationContext
 } from '../../../packages/core/src/index.js';
 import {
   PolicyDocument,
@@ -233,7 +235,15 @@ import {
   type CompositePrivacyPolicyView,
   type PolicyOrchestratorPoliciesHttpResponse,
   type PolicyOrchestratorSignalsHttpResponse,
-  type PolicyOrchestratorLastDecisionHttpResponse
+  type PolicyOrchestratorLastDecisionHttpResponse,
+  type RelayProfileView,
+  type RelayRouteView,
+  type NetworkCompartmentBindingView,
+  type NetworkIsolationDecisionView,
+  type NetworkRelaysHttpResponse,
+  type NetworkRoutesHttpResponse,
+  type NetworkBindingsHttpResponse,
+  type NetworkIsolationHttpResponse
 } from './api-contract.js';
 
 /** Default local-only bind address. The server must never listen on 0.0.0.0. */
@@ -708,7 +718,12 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'user_agent_rotated',
   'runtime_policy_evaluated',
   'runtime_policy_conflict_detected',
-  'runtime_policy_decision_applied'
+  'runtime_policy_decision_applied',
+  'runtime_policy_signal_evicted',
+  'relay_route_assigned',
+  'relay_route_rotated',
+  'network_isolation_enforced',
+  'network_isolation_denied'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -717,6 +732,34 @@ export const VALID_EVENT_SEVERITIES: readonly EventSeverity[] = [
   'info',
   'warning',
   'critical'
+];
+
+// Sprint 29 — closed vocabularies used to validate the policy-orchestrator
+// signals endpoint filters. Mirrors the core PolicySignalSource /
+// UnifiedPrivacyAction / PolicySignalSeverity unions; an unknown filter value
+// is rejected fail-closed (HTTP 400) rather than silently ignored.
+type PolicySignalSourceValue =
+  | 'capability_graph' | 'multi_agent' | 'behavioral_privacy' | 'persona_isolation'
+  | 'temporal_obfuscation' | 'transport_fingerprint' | 'network_isolation'
+  | 'trust_reputation' | 'adaptive_defense' | 'capability_firewall'
+  | 'privacy_boundary' | 'transport_policy' | 'sandbox';
+type UnifiedPrivacyActionValue =
+  | 'allow' | 'delay' | 'rotate_session' | 'rotate_fragment' | 'rotate_fingerprint'
+  | 'rotate_identity' | 'require_approval' | 'cooldown' | 'temporary_block' | 'deny';
+type PolicySignalSeverityValue = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+export const VALID_POLICY_SIGNAL_SOURCES: readonly PolicySignalSourceValue[] = [
+  'capability_graph', 'multi_agent', 'behavioral_privacy', 'persona_isolation',
+  'temporal_obfuscation', 'transport_fingerprint', 'network_isolation',
+  'trust_reputation', 'adaptive_defense', 'capability_firewall',
+  'privacy_boundary', 'transport_policy', 'sandbox'
+];
+export const VALID_UNIFIED_PRIVACY_ACTIONS: readonly UnifiedPrivacyActionValue[] = [
+  'allow', 'delay', 'rotate_session', 'rotate_fragment', 'rotate_fingerprint',
+  'rotate_identity', 'require_approval', 'cooldown', 'temporary_block', 'deny'
+];
+export const VALID_POLICY_SIGNAL_SEVERITIES: readonly PolicySignalSeverityValue[] = [
+  'info', 'low', 'medium', 'high', 'critical'
 ];
 
 /** Default session TTL (10 minutes) when `GRL_SESSION_TTL_MS` is unset. */
@@ -1120,6 +1163,7 @@ function toRuntimePolicyDecisionView(d: CompositeRuntimeDecision): CompositeRunt
     requiresSessionRotation: d.requiresSessionRotation,
     requiresFragmentRotation: d.requiresFragmentRotation,
     requiresFingerprintRotation: d.requiresFingerprintRotation,
+    requiresIdentityRotation: d.requiresIdentityRotation,
     reason: d.reason,
     signals: d.signals.map((s): PolicySignalView => ({
       id: s.id,
@@ -1139,6 +1183,23 @@ function toRuntimePolicyDecisionView(d: CompositeRuntimeDecision): CompositeRunt
     }))
   };
   if (d.delayMs !== undefined) view.delayMs = d.delayMs;
+  return view;
+}
+
+/**
+ * Convert a RouteSelectionDecision to its public HTTP view. Metadata only —
+ * carries an opaque relay/route id and the isolation level, NEVER a host, IP,
+ * URL, DNS name, endpoint, or credential.
+ */
+function toNetworkIsolationView(d: RouteSelectionDecision): NetworkIsolationDecisionView {
+  const view: NetworkIsolationDecisionView = {
+    allowed: d.allowed,
+    isolationLevel: d.isolationLevel,
+    shouldRotate: d.shouldRotate,
+    reason: d.reason
+  };
+  if (d.relayProfileId !== undefined) view.relayProfileId = d.relayProfileId;
+  if (d.relayRouteId !== undefined) view.relayRouteId = d.relayRouteId;
   return view;
 }
 
@@ -1484,6 +1545,13 @@ export interface LocalApiOptions {
    */
   runtimePolicyOrchestrator?: RuntimePolicyOrchestrator;
   /**
+   * Network Isolation Engine (Sprint 30). Assigns each compartment a stable
+   * logical relay route, rotates routes on persona/category/risk changes, and
+   * produces fail-closed route-selection decisions. Metadata only — no real
+   * Tor/proxy/VPN/DNS, and no host/IP/URL/credential is ever stored.
+   */
+  networkIsolationEngine?: NetworkIsolationEngine;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1758,6 +1826,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   // fail-closed. Never stores tokens, secrets, or raw request input.
   const runtimePolicyOrchestrator =
     options.runtimePolicyOrchestrator ?? new RuntimePolicyOrchestrator();
+
+  // Sprint 30 — Network Isolation Engine. Logical relay/route abstraction only;
+  // metadata-minimizing, deterministic, fail-closed. No real Tor/proxy/VPN/DNS,
+  // no host/IP/URL/credential stored.
+  const networkIsolationEngine =
+    options.networkIsolationEngine ?? new NetworkIsolationEngine();
 
   // Sprint 23 — Agent Registry and supporting multi-agent components.
   // All are purely in-memory; no network, persistence, browser, or external
@@ -2290,6 +2364,312 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     return { decision, profile, rotated };
   };
 
+  // ── Sprint 29 — Runtime Policy Orchestrator finalisation & signal parity ──
+  //
+  // Both POST /v1/capabilities/execute-mock and POST /v1/capabilities/execute
+  // collect their gate signals into a per-request PolicySignalCollector, then
+  // evaluate ONE composite decision. The collector isolates per-request signals
+  // (no cross-request / concurrent contamination) while still feeding the
+  // orchestrator's bounded rolling inspection buffer that the
+  // /v1/runtime/policy-orchestrator/signals endpoint serves.
+  //
+  // `finalizeRuntimePolicy` evaluates the collected signals, emits the
+  // orchestrator audit events (evaluated, conflict_detected when any,
+  // signal_evicted when the rolling buffer overflowed, decision_applied), and
+  // returns the secret-free decision view. Audit events are emitted DIRECTLY via
+  // securityEventEngine (not observeSecurity) to avoid an
+  // audit→heuristics→orchestrator feedback loop. No raw input, tokens, or
+  // secrets ever reach signal or event metadata.
+  const finalizeRuntimePolicy = (
+    collector: PolicySignalCollector,
+    ctx: { agentId?: string; compartmentId?: string; requestId?: string }
+  ): CompositeRuntimeDecisionView => {
+    const { decision, evicted } = collector.evaluate();
+    securityEventEngine.emit({
+      type: 'runtime_policy_evaluated',
+      severity: 'info',
+      agentId: ctx.agentId,
+      compartmentId: ctx.compartmentId,
+      requestId: ctx.requestId,
+      message: `Runtime policy evaluated: action="${decision.action}".`,
+      metadata: {
+        action: decision.action,
+        signalCount: decision.signals.length,
+        conflictCount: decision.conflicts.length
+      }
+    });
+    if (decision.conflicts.length > 0) {
+      securityEventEngine.emit({
+        type: 'runtime_policy_conflict_detected',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: `Policy conflicts detected: ${decision.conflicts.length} conflict(s).`,
+        metadata: { conflictCount: decision.conflicts.length }
+      });
+    }
+    if (evicted > 0) {
+      securityEventEngine.emit({
+        type: 'runtime_policy_signal_evicted',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: `Runtime policy signal buffer evicted ${evicted} oldest signal(s) (FIFO).`,
+        metadata: { evictedCount: evicted, maxSignals: runtimePolicyOrchestrator.maxSignals }
+      });
+    }
+    securityEventEngine.emit({
+      type: 'runtime_policy_decision_applied',
+      severity: 'info',
+      agentId: ctx.agentId,
+      compartmentId: ctx.compartmentId,
+      requestId: ctx.requestId,
+      message: `Runtime policy decision applied: action="${decision.action}".`,
+      metadata: { action: decision.action, allowed: decision.allowed }
+    });
+    return toRuntimePolicyDecisionView(decision);
+  };
+
+  // Install a per-request response interceptor that injects the composite
+  // runtimePolicy block into every decision-bearing response (decision =
+  // allowed | denied | pending), no matter WHICH gate short-circuited. This
+  // guarantees parity: every 200 decision path on both endpoints carries a
+  // runtimePolicy evaluated from exactly the signals collected up to that point.
+  // Protocol-error responses (400 content-type/validation, which carry `error`
+  // and no `decision`, and the 405 handlers on separate routes) are left raw.
+  //
+  // Sprint 30 — the same interceptor injects the per-request `networkIsolation`
+  // block when the network-isolation gate has produced one (held in a mutable
+  // `augment` ref so paths that respond after the gate carry it; early
+  // short-circuit denials before the gate simply omit it — it is optional).
+  const installRuntimePolicyInjection = (
+    res: ExpressResponse,
+    collector: PolicySignalCollector,
+    ctx: { agentId?: string; compartmentId?: string; requestId?: string },
+    augment?: { networkIsolation?: NetworkIsolationDecisionView }
+  ): void => {
+    const originalJson = res.json.bind(res);
+    res.json = ((body: unknown): ExpressResponse => {
+      if (
+        body !== null &&
+        typeof body === 'object' &&
+        'decision' in body
+      ) {
+        const decisionBody = body as {
+          runtimePolicy?: CompositeRuntimeDecisionView;
+          networkIsolation?: NetworkIsolationDecisionView;
+        };
+        if (
+          augment?.networkIsolation !== undefined &&
+          decisionBody.networkIsolation === undefined
+        ) {
+          decisionBody.networkIsolation = augment.networkIsolation;
+        }
+        // runtimePolicy is finalised LAST so the network_isolation signal emitted
+        // by the gate is included in the composite decision.
+        if (decisionBody.runtimePolicy === undefined) {
+          decisionBody.runtimePolicy = finalizeRuntimePolicy(collector, ctx);
+        }
+      }
+      return originalJson(body);
+    }) as ExpressResponse['json'];
+  };
+
+  // ── Sprint 30 — Network isolation gate & signals ──
+  //
+  // Emits `network_isolation` policy signals and relay/network audit events from
+  // the NetworkIsolationEngine. Metadata only — no host/IP/URL/DNS/credential.
+  // Fail-closed: a denied route-selection decision denies the request.
+  type NetworkIsolationOutcome =
+    | { kind: 'continue'; view: NetworkIsolationDecisionView }
+    | { kind: 'deny'; reason: string; view: NetworkIsolationDecisionView };
+  const evaluateNetworkIsolationGate = (
+    collector: PolicySignalCollector,
+    ctx: { agentId: string; compartmentId: string; requestId: string },
+    isolationContext: IsolationContext
+  ): NetworkIsolationOutcome => {
+    const hadBinding = networkIsolationEngine.getBinding(ctx.compartmentId) !== undefined;
+    const decision = networkIsolationEngine.evaluateIsolation(isolationContext);
+    const view = toNetworkIsolationView(decision);
+
+    if (!decision.allowed) {
+      collector.emit({
+        source: 'network_isolation',
+        action: 'deny',
+        severity: 'critical',
+        reason: decision.reason
+      });
+      securityEventEngine.emit({
+        type: 'network_isolation_denied',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Network isolation denied the request (fail-closed).',
+        metadata: { isolationLevel: decision.isolationLevel }
+      });
+      return { kind: 'deny', reason: decision.reason, view };
+    }
+
+    if (decision.shouldRotate) {
+      collector.emit({
+        source: 'network_isolation',
+        action: 'rotate_identity',
+        severity: 'medium',
+        reason: decision.reason
+      });
+      securityEventEngine.emit({
+        type: 'relay_route_rotated',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Relay route rotated.',
+        metadata: { relayRouteId: decision.relayRouteId, isolationLevel: decision.isolationLevel }
+      });
+    } else {
+      if (!hadBinding) {
+        securityEventEngine.emit({
+          type: 'relay_route_assigned',
+          severity: 'info',
+          agentId: ctx.agentId,
+          compartmentId: ctx.compartmentId,
+          requestId: ctx.requestId,
+          message: 'Relay route assigned.',
+          metadata: { relayRouteId: decision.relayRouteId, isolationLevel: decision.isolationLevel }
+        });
+      }
+      collector.emit({
+        source: 'network_isolation',
+        action: 'allow',
+        severity: 'info',
+        reason: decision.reason
+      });
+    }
+
+    securityEventEngine.emit({
+      type: 'network_isolation_enforced',
+      severity: 'info',
+      agentId: ctx.agentId,
+      compartmentId: ctx.compartmentId,
+      requestId: ctx.requestId,
+      message: 'Network isolation enforced.',
+      metadata: { isolationLevel: decision.isolationLevel, shouldRotate: decision.shouldRotate }
+    });
+    return { kind: 'continue', view };
+  };
+
+  // ── Sprint 29 — Multi-agent runtime gate & signals ──
+  //
+  // Emits real `multi_agent` policy signals from the agent registry state.
+  // Read-only with respect to quota accounting: it idempotently registers the
+  // agent (a fresh agent starts `idle`, under quota) and inspects status/counts.
+  // It NEVER wires execution-count lifecycle into the request path (that stays
+  // out of scope for Sprint 29); the quota-exceeded signal is derived read-only
+  // from registry counts and is reachable by pre-setting agent state.
+  type MultiAgentOutcome =
+    | { kind: 'continue' }
+    | { kind: 'deny'; reason: string }
+    | { kind: 'approval'; reason: string };
+  const evaluateMultiAgentGate = (
+    collector: PolicySignalCollector,
+    ctx: { agentId: string; compartmentId: string; requestId: string }
+  ): MultiAgentOutcome => {
+    const known = agentRegistry.getAgent(ctx.agentId) !== undefined;
+    const runtime = agentRegistry.registerAgent(ctx.agentId);
+    if (!known) {
+      securityEventEngine.emit({
+        type: 'agent_registered',
+        severity: 'info',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: 'Agent registered with the runtime.',
+        metadata: { status: runtime.status }
+      });
+    }
+
+    if (runtime.status === 'evicted' || runtime.status === 'quarantined') {
+      const reason = `Agent ${runtime.status}; execution denied.`;
+      collector.emit({
+        source: 'multi_agent',
+        action: 'deny',
+        severity: 'critical',
+        reason,
+        metadata: { agentStatus: runtime.status }
+      });
+      securityEventEngine.emit({
+        type: runtime.status === 'evicted' ? 'agent_evicted' : 'agent_quarantined',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: `Agent ${runtime.status}; execution denied.`,
+        metadata: { agentStatus: runtime.status }
+      });
+      return { kind: 'deny', reason };
+    }
+
+    if (runtime.status === 'restricted') {
+      const reason = 'Agent restricted; human approval required.';
+      collector.emit({
+        source: 'multi_agent',
+        action: 'require_approval',
+        severity: 'high',
+        reason,
+        metadata: { agentStatus: runtime.status }
+      });
+      securityEventEngine.emit({
+        type: 'agent_restricted',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: reason,
+        metadata: { agentStatus: runtime.status }
+      });
+      return { kind: 'approval', reason };
+    }
+
+    if (runtime.activeExecutions >= runtime.quota.maxConcurrentExecutions) {
+      const reason = 'Agent concurrent execution quota exceeded.';
+      collector.emit({
+        source: 'multi_agent',
+        action: 'temporary_block',
+        severity: 'high',
+        reason,
+        metadata: {
+          activeExecutions: runtime.activeExecutions,
+          maxConcurrentExecutions: runtime.quota.maxConcurrentExecutions
+        }
+      });
+      securityEventEngine.emit({
+        type: 'agent_quota_exceeded',
+        severity: 'warning',
+        agentId: ctx.agentId,
+        compartmentId: ctx.compartmentId,
+        requestId: ctx.requestId,
+        message: reason,
+        metadata: {
+          activeExecutions: runtime.activeExecutions,
+          maxConcurrentExecutions: runtime.quota.maxConcurrentExecutions
+        }
+      });
+      return { kind: 'deny', reason };
+    }
+
+    collector.emit({
+      source: 'multi_agent',
+      action: 'allow',
+      severity: 'info',
+      reason: `Agent ${runtime.status}; within quota.`,
+      metadata: { agentStatus: runtime.status }
+    });
+    return { kind: 'continue' };
+  };
+
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: maxBodyBytes, type: 'application/json' }));
@@ -2440,6 +2820,18 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const requestId = randomUUID();
     const inputDescriptor = describeInput(request.input);
 
+    // Sprint 29 — per-request policy-signal collector. Every gate emits its
+    // signal into this collector; the response interceptor evaluates them into a
+    // single composite runtimePolicy decision on whichever path responds.
+    const collector = new PolicySignalCollector(runtimePolicyOrchestrator);
+    const networkAugment: { networkIsolation?: NetworkIsolationDecisionView } = {};
+    installRuntimePolicyInjection(
+      res,
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      networkAugment
+    );
+
     // Defense annotation attached to the final response when a risk escalation
     // lets the request continue. Terminal defense actions build and return their
     // own response below.
@@ -2490,12 +2882,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: recorded.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'capability_graph',
         action: 'deny',
         severity: 'critical',
         reason: recorded.reason
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: recorded.reason,
@@ -2534,12 +2926,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: recorded.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'capability_graph',
         action: 'require_approval',
         severity: 'high',
         reason: recorded.reason
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: recorded.reason,
@@ -2566,12 +2958,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: graphDecision.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'capability_graph',
         action: 'rotate_session',
         severity: 'medium',
         reason: graphDecision.reason
-      }));
+      });
     } else {
       observeSecurity({
         type: 'capability_graph_allowed',
@@ -2586,12 +2978,55 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           pathRisk: graphDecision.risk
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'capability_graph',
         action: 'allow',
         severity: 'info',
         reason: graphDecision.reason
-      }));
+      });
+    }
+
+    // ── Multi-Agent runtime gate (Sprint 29) — emits multi_agent signals ──
+    const multiAgent = evaluateMultiAgentGate(collector, {
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId
+    });
+    if (multiAgent.kind === 'deny') {
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: multiAgent.reason,
+        capabilityGraph: capabilityGraphView
+      };
+      return res.status(200).json(response);
+    }
+    if (multiAgent.kind === 'approval') {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        reason: multiAgent.reason
+      });
+      observeSecurity({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: multiAgent.reason,
+        metadata: { tool: request.tool, riskLevel: request.riskLevel }
+      });
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'pending',
+        reason: multiAgent.reason,
+        capabilityGraph: capabilityGraphView,
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      };
+      return res.status(200).json(response);
     }
 
     // ── Compartment Trust gate (Sprint 14) — runs BEFORE the defense pipeline ──
@@ -2606,12 +3041,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const trustView: TrustView = toTrustView(trustProfile);
 
     if (trustProfile.score.level === 'quarantined') {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'trust_reputation',
         action: 'deny',
         severity: 'critical',
         reason: 'Compartment quarantined.'
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Compartment quarantined.',
@@ -2655,22 +3090,22 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'trust_reputation',
         action: 'require_approval',
         severity: 'high',
         reason: 'Compartment restricted; human approval required.'
-      }));
+      });
       return res.status(200).json(response);
     }
 
     // Trust neutral/trusted — continue.
-    runtimePolicyOrchestrator.emit(createSignal({
+    collector.emit({
       source: 'trust_reputation',
       action: 'allow',
       severity: 'info',
       reason: `Trust level: ${trustProfile.score.level}.`
-    }));
+    });
     const bpDecision: BehavioralPrivacyDecision =
       behavioralPrivacyEngine.evaluateRequest({
         agentId: request.agentId,
@@ -2689,12 +3124,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           'Behavioral privacy engine blocked the request due to critical correlation risk.',
         metadata: { reason: bpDecision.reason }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'behavioral_privacy',
         action: 'deny',
         severity: 'critical',
         reason: bpDecision.reason ?? 'behavioral_privacy_blocked'
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: bpDecision.reason ?? 'behavioral_privacy_blocked',
@@ -2706,26 +3141,26 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Emit behavioral privacy signal for the allowed path.
     if (bpDecision.requiresFragmentation) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'behavioral_privacy',
         action: 'rotate_fragment',
         severity: 'medium',
         reason: bpDecision.reason ?? 'Behavioral fragmentation required.'
-      }));
+      });
     } else if (bpDecision.requiresDelay) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'behavioral_privacy',
         action: 'delay',
         severity: 'low',
         reason: bpDecision.reason ?? 'Behavioral jitter required.'
-      }));
+      });
     } else {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'behavioral_privacy',
         action: 'allow',
         severity: 'info',
         reason: 'Behavioral privacy OK.'
-      }));
+      });
     }
 
     if (bpDecision.requiresDelay) {
@@ -2896,26 +3331,26 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Emit persona isolation signal.
     if (isolationDecision.requiresBehavioralEscalation) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'persona_isolation',
         action: 'rotate_fragment',
         severity: 'high',
         reason: isolationDecision.reason ?? 'Persona behavioral escalation.'
-      }));
+      });
     } else if (isolationDecision.requiresNewFragment) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'persona_isolation',
         action: 'rotate_fragment',
         severity: 'medium',
         reason: isolationDecision.reason ?? 'Persona fragment rotation required.'
-      }));
+      });
     } else {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'persona_isolation',
         action: 'allow',
         severity: 'info',
         reason: 'Persona isolation OK.'
-      }));
+      });
     }
 
     // ── Temporal Obfuscation gate (Sprint 26) ──
@@ -3014,33 +3449,33 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Emit temporal obfuscation signal.
     if (!temporalDecision.allowed) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'temporal_obfuscation',
         action: 'temporary_block',
         severity: 'high',
         reason: 'Temporal privacy budget exhausted.'
-      }));
+      });
     } else if (temporalDecision.requiresSchedulingEscalation) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'temporal_obfuscation',
         action: 'cooldown',
         severity: 'medium',
         reason: temporalDecision.reason ?? 'Temporal scheduling escalation.'
-      }));
+      });
     } else if (temporalDecision.requiresDelay) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'temporal_obfuscation',
         action: 'delay',
         severity: 'low',
         reason: temporalDecision.reason ?? 'Temporal spacing required.'
-      }));
+      });
     } else {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'temporal_obfuscation',
         action: 'allow',
         severity: 'info',
         reason: 'Temporal risk OK.'
-      }));
+      });
     }
 
     const fingerprintState = applyTransportFingerprint({
@@ -3054,19 +3489,19 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
 
     // Emit transport fingerprint signal.
     if (fingerprintState.rotated) {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'transport_fingerprint',
         action: 'rotate_fingerprint',
         severity: 'low',
         reason: fingerprintState.decision.reason ?? 'Fingerprint rotation applied.'
-      }));
+      });
     } else {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'transport_fingerprint',
         action: 'allow',
         severity: 'info',
         reason: 'Transport fingerprint OK.'
-      }));
+      });
     }
 
     // Discriminated outcome of applying one non-`allow` defense action.
@@ -3217,12 +3652,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         }
       });
       // Map rate limit action to a UnifiedPrivacyAction for the orchestrator.
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'adaptive_defense',
         action: defenseActionToOrchestratorAction(rateDecision.action),
         severity: 'high',
         reason: rateDecision.reason
-      }));
+      });
       const terminal = resolveDefense(
         'rate_limit',
         rateDecision.action,
@@ -3270,12 +3705,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         .map((action) => adaptiveDecisions.find((d) => d.action === action))
         .find((decision) => decision !== undefined);
       if (chosen) {
-        runtimePolicyOrchestrator.emit(createSignal({
+        collector.emit({
           source: 'adaptive_defense',
           action: defenseActionToOrchestratorAction(chosen.action),
           severity: 'high',
           reason: chosen.reason
-        }));
+        });
         const terminal = resolveDefense(
           'adaptive_defense',
           chosen.action,
@@ -3318,12 +3753,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: decision.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'capability_firewall',
         action: 'deny',
         severity: 'critical',
         reason: decision.reason
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: decision.reason,
@@ -3359,12 +3794,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: decision.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'capability_firewall',
         action: 'require_approval',
         severity: 'high',
         reason: decision.reason
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
         reason: decision.reason,
@@ -3390,12 +3825,29 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         reason: decision.reason
       }
     });
-    runtimePolicyOrchestrator.emit(createSignal({
+    collector.emit({
       source: 'capability_firewall',
       action: 'allow',
       severity: 'info',
       reason: decision.reason
-    }));
+    });
+
+    // ── Network Isolation gate (Sprint 30) — logical relay/route isolation ──
+    const networkOutcome = evaluateNetworkIsolationGate(
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      { compartmentId: request.compartmentId, personaId: categoryHint ?? undefined }
+    );
+    networkAugment.networkIsolation = networkOutcome.view;
+    if (networkOutcome.kind === 'deny') {
+      const response: ExecuteMockCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: networkOutcome.reason,
+        capabilityGraph: capabilityGraphView
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
 
     // Allowed without confirmation: resolve the routing decision FIRST (the
     // Transport Policy Engine consults only tool + riskLevel and never touches
@@ -3456,12 +3908,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         isolationLevel: routing.isolationLevel
       }
     });
-    runtimePolicyOrchestrator.emit(createSignal({
+    collector.emit({
       source: 'transport_policy',
       action: 'allow',
       severity: 'info',
       reason: routing.reason ?? 'Transport routing resolved.'
-    }));
+    });
 
     // Privacy Boundary Engine (Sprint 9): evaluate anti-correlation AFTER routing
     // is resolved but BEFORE any session is minted/rotated. The engine consults
@@ -3498,12 +3950,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: privacy.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'privacy_boundary',
         action: 'deny',
         severity: 'critical',
         reason: privacy.reason
-      }));
+      });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'Privacy boundary blocked execution.',
@@ -3550,12 +4002,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalRequestId: created.request.id,
         approvalToken: created.token.value
       };
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'privacy_boundary',
         action: 'require_approval',
         severity: 'high',
         reason: privacy.reason
-      }));
+      });
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
@@ -3576,19 +4028,19 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           reason: privacy.reason
         }
       });
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'privacy_boundary',
         action: 'rotate_session',
         severity: 'medium',
         reason: privacy.reason
-      }));
+      });
     } else {
-      runtimePolicyOrchestrator.emit(createSignal({
+      collector.emit({
         source: 'privacy_boundary',
         action: 'allow',
         severity: 'info',
         reason: 'Privacy boundary OK.'
-      }));
+      });
     }
 
     // The session rotates when the routing decision, the privacy boundary, OR
@@ -3695,12 +4147,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
             sandboxViolations: sandboxViolationCodes
           }
         });
-        runtimePolicyOrchestrator.emit(createSignal({
+        collector.emit({
           source: 'sandbox',
           action: 'deny',
           severity: 'critical',
           reason: 'Sandbox blocked execution.'
-        }));
+        });
       } else {
         observeSecurity({
           type: 'sandbox_allowed',
@@ -3716,12 +4168,12 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
             transportKind: result.transportKind
           }
         });
-        runtimePolicyOrchestrator.emit(createSignal({
+        collector.emit({
           source: 'sandbox',
           action: 'allow',
           severity: 'info',
           reason: 'Sandbox allowed execution.'
-        }));
+        });
       }
     }
 
@@ -3803,52 +4255,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       execution.error = result.error;
     }
 
-    // ── Sprint 28 — Runtime Policy Orchestrator ──
-    // Evaluate all accumulated signals from this request's gate pipeline and
-    // produce a composite privacy decision. Emit 3 audit events (evaluated,
-    // conflict_detected if applicable, decision_applied). Never logs raw input,
-    // tokens, or secrets. Emitted directly (not via observeSecurity) to avoid
-    // an audit→heuristics→orchestrator feedback loop.
-    const orchestratorDecision = runtimePolicyOrchestrator.evaluate(
-      runtimePolicyOrchestrator.listSignals()
-    );
-    securityEventEngine.emit({
-      type: 'runtime_policy_evaluated',
-      severity: 'info',
-      agentId: request.agentId,
-      compartmentId: request.compartmentId,
-      requestId,
-      message: `Runtime policy evaluated: action="${orchestratorDecision.action}".`,
-      metadata: {
-        action: orchestratorDecision.action,
-        signalCount: orchestratorDecision.signals.length,
-        conflictCount: orchestratorDecision.conflicts.length
-      }
-    });
-    if (orchestratorDecision.conflicts.length > 0) {
-      securityEventEngine.emit({
-        type: 'runtime_policy_conflict_detected',
-        severity: 'warning',
-        agentId: request.agentId,
-        compartmentId: request.compartmentId,
-        requestId,
-        message: `Policy conflicts detected: ${orchestratorDecision.conflicts.length} conflict(s).`,
-        metadata: { conflictCount: orchestratorDecision.conflicts.length }
-      });
-    }
-    securityEventEngine.emit({
-      type: 'runtime_policy_decision_applied',
-      severity: 'info',
-      agentId: request.agentId,
-      compartmentId: request.compartmentId,
-      requestId,
-      message: `Runtime policy decision applied: action="${orchestratorDecision.action}".`,
-      metadata: {
-        action: orchestratorDecision.action,
-        allowed: orchestratorDecision.allowed
-      }
-    });
-
+    // Sprint 29 — the runtimePolicy block is evaluated and injected by the
+    // per-request response interceptor (installRuntimePolicyInjection) from the
+    // signals this request's gates collected, so the allowed path and every
+    // short-circuit path carry a consistent composite decision.
     const response: ExecuteMockCapabilityHttpResponse = {
       decision: 'allowed',
       reason: decision.reason,
@@ -3862,8 +4272,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         rotationCount: fingerprintState.profile.rotationCount,
         correlationRisk: fingerprintState.profile.correlationRisk,
         rotated: fingerprintState.rotated
-      },
-      runtimePolicy: toRuntimePolicyDecisionView(orchestratorDecision)
+      }
     };
     // Surface the sandbox decision (allow or block) when the engine enforced it.
     if (result.sandbox !== undefined) {
@@ -3914,6 +4323,19 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const inputDescriptor = describeInput(request.input);
     const categoryHint = extractPersonaCategory(request.input);
 
+    // Sprint 29 — per-request policy-signal collector (parity with execute-mock).
+    // Gates emit signals here; the response interceptor evaluates them into the
+    // composite runtimePolicy block injected on every decision path, including
+    // when a gate short-circuits before SearXNG/mock execution.
+    const collector = new PolicySignalCollector(runtimePolicyOrchestrator);
+    const networkAugment: { networkIsolation?: NetworkIsolationDecisionView } = {};
+    installRuntimePolicyInjection(
+      res,
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      networkAugment
+    );
+
     let defenseView: DefenseDecisionView | undefined;
 
     // ── Capability Graph gate ────────────────────────────────────────────────
@@ -3943,6 +4365,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Capability graph blocked the execution path.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: recorded.risk, reason: recorded.reason }
       });
+      collector.emit({ source: 'capability_graph', action: 'deny', severity: 'critical', reason: recorded.reason });
       return res.status(200).json({
         decision: 'denied',
         reason: recorded.reason,
@@ -3975,6 +4398,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Capability graph requires human approval for the path.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: recorded.risk, reason: recorded.reason }
       });
+      collector.emit({ source: 'capability_graph', action: 'require_approval', severity: 'high', reason: recorded.reason });
       return res.status(200).json({
         decision: 'pending',
         reason: recorded.reason,
@@ -3995,6 +4419,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Capability graph forced a session rotation for the path.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: graphDecision.risk, reason: graphDecision.reason }
       });
+      collector.emit({ source: 'capability_graph', action: 'rotate_session', severity: 'medium', reason: graphDecision.reason });
     } else {
       observeSecurity({
         type: 'capability_graph_allowed',
@@ -4005,6 +4430,48 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Capability graph allowed the execution path.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, pathRisk: graphDecision.risk }
       });
+      collector.emit({ source: 'capability_graph', action: 'allow', severity: 'info', reason: graphDecision.reason });
+    }
+
+    // ── Multi-Agent runtime gate (Sprint 29) — emits multi_agent signals ──
+    const multiAgent = evaluateMultiAgentGate(collector, {
+      agentId: request.agentId,
+      compartmentId: request.compartmentId,
+      requestId
+    });
+    if (multiAgent.kind === 'deny') {
+      return res.status(200).json({
+        decision: 'denied',
+        reason: multiAgent.reason,
+        capabilityGraph: capabilityGraphView
+      } as ExecuteCapabilityHttpResponse);
+    }
+    if (multiAgent.kind === 'approval') {
+      const created = approvalQueue.create({
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        tool: request.tool as CapabilityTool,
+        riskLevel: request.riskLevel as RiskLevel,
+        input: request.input,
+        reason: multiAgent.reason
+      });
+      observeSecurity({
+        type: 'approval_pending',
+        severity: 'info',
+        agentId: request.agentId,
+        compartmentId: request.compartmentId,
+        requestId,
+        approvalRequestId: created.request.id,
+        message: multiAgent.reason,
+        metadata: { tool: request.tool, riskLevel: request.riskLevel }
+      });
+      return res.status(200).json({
+        decision: 'pending',
+        reason: multiAgent.reason,
+        capabilityGraph: capabilityGraphView,
+        approvalRequestId: created.request.id,
+        approvalToken: created.token.value
+      } as ExecuteCapabilityHttpResponse);
     }
 
     // ── Trust gate ───────────────────────────────────────────────────────────
@@ -4012,6 +4479,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     const trustView: TrustView = toTrustView(trustProfile);
 
     if (trustProfile.score.level === 'quarantined') {
+      collector.emit({ source: 'trust_reputation', action: 'deny', severity: 'critical', reason: 'Compartment quarantined.' });
       return res.status(200).json({
         decision: 'denied',
         reason: 'Compartment quarantined.',
@@ -4039,6 +4507,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Compartment restricted; human approval required.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, trustLevel: trustProfile.score.level }
       });
+      collector.emit({ source: 'trust_reputation', action: 'require_approval', severity: 'high', reason: 'Compartment restricted; human approval required.' });
       return res.status(200).json({
         decision: 'pending',
         reason: 'Compartment restricted; human approval required.',
@@ -4048,6 +4517,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         approvalToken: created.token.value
       } as ExecuteCapabilityHttpResponse);
     }
+
+    collector.emit({ source: 'trust_reputation', action: 'allow', severity: 'info', reason: `Trust level: ${trustProfile.score.level}.` });
 
     // ── Defense pipeline ─────────────────────────────────────────────────────
     type DefenseTerminal =
@@ -4140,6 +4611,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Rate limit triggered.',
         metadata: { tool: request.tool, action: rateDecision.action, reason: rateDecision.reason }
       });
+      collector.emit({ source: 'adaptive_defense', action: defenseActionToOrchestratorAction(rateDecision.action), severity: 'high', reason: rateDecision.reason });
       const terminal = resolveDefenseForExecute('rate_limit', rateDecision.action, rateDecision.reason, rateDecision.retryAfterMs, undefined);
       if (terminal.kind === 'respond') return res.status(200).json(terminal.body);
       if (terminal.kind === 'escalate') { request.riskLevel = terminal.escalation.escalatedRisk; defenseView = terminal.defense; }
@@ -4165,6 +4637,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         .map((action) => adaptiveDecisionsExec.find((d) => d.action === action))
         .find((d) => d !== undefined);
       if (chosenExec) {
+        collector.emit({ source: 'adaptive_defense', action: defenseActionToOrchestratorAction(chosenExec.action), severity: 'high', reason: chosenExec.reason });
         const terminal = resolveDefenseForExecute('adaptive_defense', chosenExec.action, chosenExec.reason, chosenExec.cooldownMs, chosenExec.escalation?.escalatedRisk);
         if (terminal.kind === 'respond') return res.status(200).json(terminal.body);
         if (terminal.kind === 'escalate') { request.riskLevel = terminal.escalation.escalatedRisk; defenseView = terminal.defense; }
@@ -4192,6 +4665,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Capability denied by firewall.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
       });
+      collector.emit({ source: 'capability_firewall', action: 'deny', severity: 'critical', reason: decisionExec.reason });
       const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: decisionExec.reason, capabilityGraph: capabilityGraphView };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
@@ -4217,6 +4691,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Capability requires human approval.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
       });
+      collector.emit({ source: 'capability_firewall', action: 'require_approval', severity: 'high', reason: decisionExec.reason });
       const response: ExecuteCapabilityHttpResponse = { decision: 'pending', reason: decisionExec.reason, capabilityGraph: capabilityGraphView, approvalRequestId: created.request.id, approvalToken: created.token.value };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
@@ -4231,6 +4706,24 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       message: 'Capability allowed by firewall.',
       metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
     });
+    collector.emit({ source: 'capability_firewall', action: 'allow', severity: 'info', reason: decisionExec.reason });
+
+    // ── Network Isolation gate (Sprint 30) — logical relay/route isolation ──
+    const networkOutcome = evaluateNetworkIsolationGate(
+      collector,
+      { agentId: request.agentId, compartmentId: request.compartmentId, requestId },
+      { compartmentId: request.compartmentId, personaId: categoryHint ?? undefined }
+    );
+    networkAugment.networkIsolation = networkOutcome.view;
+    if (networkOutcome.kind === 'deny') {
+      const response: ExecuteCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: networkOutcome.reason,
+        capabilityGraph: capabilityGraphView
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
 
     // ── Routing ──────────────────────────────────────────────────────────────
     let routingExec: RoutingDecision;
@@ -4247,6 +4740,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
     } catch (err) {
       if (err instanceof TransportPolicyError) {
+        collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: `No transport routing rule available: ${err.message}` });
         const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: `No transport routing rule available: ${err.message}`, capabilityGraph: capabilityGraphView };
         if (defenseView !== undefined) response.defense = defenseView;
         return res.status(200).json(response);
@@ -4270,6 +4764,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (resolvedKind === 'searxng') {
       const searxngCfg = activeSnapshot.config.transports?.searxng;
       if (!searxngCfg || !searxngCfg.enabled) {
+        collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'SearXNG transport disabled.' });
         const response: ExecuteCapabilityHttpResponse = {
           decision: 'denied',
           reason: 'SearXNG transport disabled.',
@@ -4282,6 +4777,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       // SearXNG is enabled: the realSearXngEngine handles this transport.
       if (!realSearXngEngine) {
         // Config may have changed since reload; fail-closed.
+        collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'SearXNG transport unavailable (engine not initialised).' });
         const response: ExecuteCapabilityHttpResponse = {
           decision: 'denied',
           reason: 'SearXNG transport unavailable (engine not initialised).',
@@ -4293,6 +4789,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       }
     } else if (resolvedKind !== 'mock') {
       // Unknown transport kind — fail-closed.
+      collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.` });
       const response: ExecuteCapabilityHttpResponse = {
         decision: 'denied',
         reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.`,
@@ -4312,6 +4809,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       message: 'Transport routing resolved.',
       metadata: { tool: request.tool, riskLevel: request.riskLevel, transportKind: resolvedKind, routingReason: routingExec.reason, isolationLevel: routingExec.isolationLevel }
     });
+    collector.emit({ source: 'transport_policy', action: 'allow', severity: 'info', reason: routingExec.reason ?? 'Transport routing resolved.' });
 
     // ── Privacy Boundary ─────────────────────────────────────────────────────
     const privacyExec: PrivacyBoundaryDecision = privacyBoundaryEngine.evaluate({
@@ -4334,6 +4832,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Privacy boundary blocked execution.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
       });
+      collector.emit({ source: 'privacy_boundary', action: 'deny', severity: 'critical', reason: privacyExec.reason });
       const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: 'Privacy boundary blocked execution.', capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
@@ -4359,6 +4858,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Privacy boundary requires human approval.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
       });
+      collector.emit({ source: 'privacy_boundary', action: 'require_approval', severity: 'high', reason: privacyExec.reason });
       const response: ExecuteCapabilityHttpResponse = { decision: 'pending', reason: privacyExec.reason, capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec, approvalRequestId: created.request.id, approvalToken: created.token.value };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
@@ -4374,6 +4874,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         message: 'Privacy boundary forced a session rotation.',
         metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
       });
+      collector.emit({ source: 'privacy_boundary', action: 'rotate_session', severity: 'medium', reason: privacyExec.reason });
+    } else {
+      collector.emit({ source: 'privacy_boundary', action: 'allow', severity: 'info', reason: 'Privacy boundary OK.' });
     }
 
     const fingerprintStateExec = applyTransportFingerprint({
@@ -4382,6 +4885,13 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       requestId,
       sensitiveCategoryDetected: isSensitivePersonaCategory(categoryHint)
     });
+
+    // Emit transport fingerprint signal (parity with execute-mock).
+    if (fingerprintStateExec.rotated) {
+      collector.emit({ source: 'transport_fingerprint', action: 'rotate_fingerprint', severity: 'low', reason: fingerprintStateExec.decision.reason ?? 'Fingerprint rotation applied.' });
+    } else {
+      collector.emit({ source: 'transport_fingerprint', action: 'allow', severity: 'info', reason: 'Transport fingerprint OK.' });
+    }
 
     // ── Session ──────────────────────────────────────────────────────────────
     const mustRotateExec = routingExec.shouldRotateSession || privacyExec.action === 'rotate_session' || graphForcesRotation;
@@ -4450,6 +4960,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           message: 'Adapter sandbox blocked execution.',
           metadata: { tool: request.tool, transportKind: resultExec.transportKind, sandboxViolations: sandboxViolationCodesExec }
         });
+        collector.emit({ source: 'sandbox', action: 'deny', severity: 'critical', reason: 'Sandbox blocked execution.' });
       } else {
         observeSecurity({
           type: 'sandbox_allowed',
@@ -4462,6 +4973,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           message: 'Adapter sandbox allowed execution.',
           metadata: { tool: request.tool, transportKind: resultExec.transportKind }
         });
+        collector.emit({ source: 'sandbox', action: 'allow', severity: 'info', reason: 'Sandbox allowed execution.' });
       }
     }
 
@@ -5666,6 +6178,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
   (app as unknown as Record<string, unknown>)['_temporalObfuscationEngine'] = temporalObfuscationEngine;
   (app as unknown as Record<string, unknown>)['_transportFingerprintEngine'] = transportFingerprintEngine;
   (app as unknown as Record<string, unknown>)['_runtimePolicyOrchestrator'] = runtimePolicyOrchestrator;
+  (app as unknown as Record<string, unknown>)['_networkIsolationEngine'] = networkIsolationEngine;
 
   // ── Sprint 28 — Runtime Policy Orchestrator endpoints ──
   // Metadata only: policies, accumulated signals, last composite decision.
@@ -5692,19 +6205,63 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     });
   });
 
-  // GET /v1/runtime/policy-orchestrator/signals — list accumulated signals.
-  app.get('/v1/runtime/policy-orchestrator/signals', (_req, res) => {
-    const signals: PolicySignalView[] = runtimePolicyOrchestrator
-      .listSignals()
-      .map((s): PolicySignalView => ({
-        id: s.id,
-        source: s.source,
-        action: s.action,
-        severity: s.severity,
-        reason: s.reason,
-        createdAt: s.createdAt,
-        ...(s.metadata !== undefined ? { metadata: { ...s.metadata } } : {})
-      }));
+  // GET /v1/runtime/policy-orchestrator/signals — list buffered signals.
+  //
+  // Sprint 29 — optional filters: ?source=&action=&severity=&limit=.
+  // Filters are validated against the closed signal vocabulary; an unknown
+  // value is rejected fail-closed with HTTP 400 rather than silently ignored.
+  // `limit` must be a positive integer and is clamped to the orchestrator's
+  // bounded buffer size. Filters compose with AND semantics; `limit` keeps the
+  // most recent matching signals.
+  app.get('/v1/runtime/policy-orchestrator/signals', (req, res) => {
+    const { source, action, severity, limit } = req.query;
+
+    const readScalar = (value: unknown): string | undefined => {
+      if (value === undefined) return undefined;
+      return Array.isArray(value) ? String(value[value.length - 1]) : String(value);
+    };
+
+    const sourceParam = readScalar(source);
+    if (sourceParam !== undefined && !VALID_POLICY_SIGNAL_SOURCES.includes(sourceParam as PolicySignalSourceValue)) {
+      return res.status(400).json({ error: `Invalid source: "${sourceParam}".` });
+    }
+    const actionParam = readScalar(action);
+    if (actionParam !== undefined && !VALID_UNIFIED_PRIVACY_ACTIONS.includes(actionParam as UnifiedPrivacyActionValue)) {
+      return res.status(400).json({ error: `Invalid action: "${actionParam}".` });
+    }
+    const severityParam = readScalar(severity);
+    if (severityParam !== undefined && !VALID_POLICY_SIGNAL_SEVERITIES.includes(severityParam as PolicySignalSeverityValue)) {
+      return res.status(400).json({ error: `Invalid severity: "${severityParam}".` });
+    }
+    let limitParam: number | undefined;
+    const rawLimit = readScalar(limit);
+    if (rawLimit !== undefined) {
+      const parsed = Number(rawLimit);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        return res.status(400).json({ error: `Invalid limit: "${rawLimit}". Must be a positive integer.` });
+      }
+      // Clamp to the bounded buffer — the buffer can never hold more anyway.
+      limitParam = Math.min(parsed, runtimePolicyOrchestrator.maxSignals);
+    }
+
+    let filtered = runtimePolicyOrchestrator.listSignals();
+    if (sourceParam !== undefined) filtered = filtered.filter((s) => s.source === sourceParam);
+    if (actionParam !== undefined) filtered = filtered.filter((s) => s.action === actionParam);
+    if (severityParam !== undefined) filtered = filtered.filter((s) => s.severity === severityParam);
+    if (limitParam !== undefined && filtered.length > limitParam) {
+      // Keep the most recent matching signals.
+      filtered = filtered.slice(filtered.length - limitParam);
+    }
+
+    const signals: PolicySignalView[] = filtered.map((s): PolicySignalView => ({
+      id: s.id,
+      source: s.source,
+      action: s.action,
+      severity: s.severity,
+      reason: s.reason,
+      createdAt: s.createdAt,
+      ...(s.metadata !== undefined ? { metadata: { ...s.metadata } } : {})
+    }));
     const body: PolicyOrchestratorSignalsHttpResponse = { signals };
     return res.status(200).json(body);
   });
@@ -5726,6 +6283,113 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     res.status(405).json({
       error: 'Method not allowed. Use GET /v1/runtime/policy-orchestrator/last-decision.'
     });
+  });
+
+  // ── Sprint 30 — Network Isolation read endpoints ──
+  //
+  // Metadata only. These NEVER expose a host, IP, URL, DNS name, endpoint,
+  // credential, token, or raw input — only opaque relay/route ids and
+  // structural isolation metadata.
+  const readNetworkLimit = (raw: unknown): number | undefined | null => {
+    if (raw === undefined) return undefined;
+    const value = Array.isArray(raw) ? String(raw[raw.length - 1]) : String(raw);
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) return null; // sentinel: invalid
+    return parsed;
+  };
+
+  // GET /v1/network/relays — list registered relay profiles.
+  app.get('/v1/network/relays', (req, res) => {
+    const limit = readNetworkLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'Invalid limit. Must be a positive integer.' });
+    }
+    const relays: RelayProfileView[] = networkIsolationEngine
+      .listRelayProfiles(limit)
+      .map((p): RelayProfileView => ({
+        id: p.id,
+        name: p.name,
+        enabled: p.enabled,
+        isolationLevel: p.isolationLevel,
+        supportsDnsIsolation: p.supportsDnsIsolation,
+        tags: [...p.tags],
+        createdAt: p.createdAt
+      }));
+    const body: NetworkRelaysHttpResponse = { relays };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/relays', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/relays.' });
+  });
+
+  // GET /v1/network/routes — list logical relay routes (opaque ids only).
+  app.get('/v1/network/routes', (req, res) => {
+    const limit = readNetworkLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'Invalid limit. Must be a positive integer.' });
+    }
+    const routes: RelayRouteView[] = networkIsolationEngine
+      .listRoutes(limit)
+      .map((r): RelayRouteView => ({
+        id: r.id,
+        relayProfileId: r.relayProfileId,
+        ...(r.compartmentId !== undefined ? { compartmentId: r.compartmentId } : {}),
+        ...(r.personaId !== undefined ? { personaId: r.personaId } : {}),
+        ...(r.fragmentId !== undefined ? { fragmentId: r.fragmentId } : {}),
+        assignedAt: r.assignedAt,
+        active: r.active
+      }));
+    const body: NetworkRoutesHttpResponse = { routes };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/routes', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/routes.' });
+  });
+
+  // GET /v1/network/bindings — list compartment→route bindings.
+  app.get('/v1/network/bindings', (req, res) => {
+    const limit = readNetworkLimit(req.query.limit);
+    if (limit === null) {
+      return res.status(400).json({ error: 'Invalid limit. Must be a positive integer.' });
+    }
+    const bindings: NetworkCompartmentBindingView[] = networkIsolationEngine
+      .listBindings(limit)
+      .map((b): NetworkCompartmentBindingView => ({
+        compartmentId: b.compartmentId,
+        relayRouteId: b.relayRouteId,
+        isolationLevel: b.isolationLevel,
+        createdAt: b.createdAt
+      }));
+    const body: NetworkBindingsHttpResponse = { bindings };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/bindings', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/bindings.' });
+  });
+
+  // GET /v1/network/isolation — DNS isolation + rotation policy metadata.
+  app.get('/v1/network/isolation', (_req, res) => {
+    const dns = networkIsolationEngine.getDnsPolicy();
+    const rotation = networkIsolationEngine.getRotationPolicy();
+    const body: NetworkIsolationHttpResponse = {
+      dnsPolicy: {
+        enabled: dns.enabled,
+        isolatePerCompartment: dns.isolatePerCompartment,
+        isolatePerPersona: dns.isolatePerPersona,
+        isolatePerFragment: dns.isolatePerFragment
+      },
+      rotationPolicy: {
+        enabled: rotation.enabled,
+        rotateOnPersonaChange: rotation.rotateOnPersonaChange,
+        rotateOnCategoryChange: rotation.rotateOnCategoryChange,
+        rotateOnCriticalRisk: rotation.rotateOnCriticalRisk,
+        maxAssignmentsPerRoute: rotation.maxAssignmentsPerRoute
+      }
+    };
+    return res.status(200).json(body);
+  });
+  app.all('/v1/network/isolation', (_req, res) => {
+    res.status(405).json({ error: 'Method not allowed. Use GET /v1/network/isolation.' });
   });
 
   // Unknown routes → 404.

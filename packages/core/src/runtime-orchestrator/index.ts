@@ -15,7 +15,13 @@ export type {
   CompositeRuntimeDecision
 } from './types.js';
 
-export { RuntimePolicyOrchestrator } from './orchestrator.js';
+export { RuntimePolicyOrchestrator, DEFAULT_MAX_SIGNALS } from './orchestrator.js';
+export type {
+  RuntimePolicyOrchestratorOptions,
+  RecordSignalsResult
+} from './orchestrator.js';
+export { PolicySignalCollector, DEFAULT_MAX_COLLECTED_SIGNALS } from './collector.js';
+export type { CollectorEvaluation, PolicySignalCollectorOptions } from './collector.js';
 export { DEFAULT_COMPOSITE_PRIVACY_POLICY } from './policies.js';
 export { createSignal } from './signals.js';
 export type { CreateSignalInput } from './signals.js';

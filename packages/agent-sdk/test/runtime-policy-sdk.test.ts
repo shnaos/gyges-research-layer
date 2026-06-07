@@ -134,6 +134,42 @@ describe('GrlAgentClient.listRuntimePolicySignals()', () => {
     await client.listRuntimePolicySignals();
     expect(capturedMethod).toBe('GET');
   });
+
+  // Sprint 29 — filters serialised as query params.
+  it('serialises source/action/severity/limit filters into the query string', async () => {
+    let capturedUrl = '';
+    mockFetch((url) => {
+      capturedUrl = url;
+      return jsonResponse({ signals: [] });
+    });
+    await client.listRuntimePolicySignals({
+      source: 'multi_agent',
+      action: 'deny',
+      severity: 'critical',
+      limit: 20
+    });
+    expect(capturedUrl).toContain('source=multi_agent');
+    expect(capturedUrl).toContain('action=deny');
+    expect(capturedUrl).toContain('severity=critical');
+    expect(capturedUrl).toContain('limit=20');
+  });
+
+  it('omits the query string when no filters are passed', async () => {
+    let capturedUrl = '';
+    mockFetch((url) => {
+      capturedUrl = url;
+      return jsonResponse({ signals: [] });
+    });
+    await client.listRuntimePolicySignals();
+    expect(capturedUrl.endsWith('/v1/runtime/policy-orchestrator/signals')).toBe(true);
+  });
+
+  it('propagates a server 400 (invalid filter) as a fail-closed error', async () => {
+    mockFetch(() => jsonResponse({ error: 'Invalid source: "nope".' }, 400));
+    await expect(
+      client.listRuntimePolicySignals({ source: 'multi_agent' })
+    ).rejects.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

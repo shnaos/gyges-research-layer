@@ -21,6 +21,23 @@ config explicitly enables it.
 
 The `/v1/capabilities/execute-mock` endpoint is untouched by this sprint.
 
+### Runtime policy parity (Sprint 29)
+
+Both endpoints now run the **same** runtime-policy orchestration path and return a
+`runtimePolicy` block on every decision response. The only intended difference is
+the transport:
+
+| Aspect | `execute-mock` | `execute` |
+|---|---|---|
+| Transport | always mock | SearXNG when enabled + routed, else fail-closed (no silent fallback to real network) |
+| `runtimePolicy` block | yes | yes |
+| Common signal sources | emitted | emitted (same core set) |
+| Extra simulated gates | `behavioral_privacy`, `persona_isolation`, `temporal_obfuscation` | not emitted |
+
+For the same authorised request, the common signal sources match across both
+endpoints; the transport difference is explicit and expected. See
+[`docs/runtime-policy-orchestrator.md`](./runtime-policy-orchestrator.md#sprint-29--execute-parity-bounded-buffer-and-filters).
+
 ---
 
 ## Runtime Configuration

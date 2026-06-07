@@ -597,10 +597,18 @@ export class GrlApiClient {
     );
   }
 
-  async listPolicyOrchestratorSignals(): Promise<PolicyOrchestratorSignalsResponse> {
+  async listPolicyOrchestratorSignals(
+    filters: PolicySignalFilters = {}
+  ): Promise<PolicyOrchestratorSignalsResponse> {
+    const params = new URLSearchParams();
+    if (filters.source) params.set('source', filters.source);
+    if (filters.action) params.set('action', filters.action);
+    if (filters.severity) params.set('severity', filters.severity);
+    if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+    const qs = params.toString();
     return this.request<PolicyOrchestratorSignalsResponse>(
       'GET',
-      '/v1/runtime/policy-orchestrator/signals'
+      `/v1/runtime/policy-orchestrator/signals${qs ? `?${qs}` : ''}`
     );
   }
 
@@ -610,6 +618,30 @@ export class GrlApiClient {
       '/v1/runtime/policy-orchestrator/last-decision'
     );
   }
+
+  // Sprint 30 — Network isolation (metadata only).
+  async listNetworkRelays(filters: NetworkListFilters = {}): Promise<NetworkRelaysResponse> {
+    return this.request<NetworkRelaysResponse>('GET', `/v1/network/relays${networkQs(filters)}`);
+  }
+
+  async listNetworkRoutes(filters: NetworkListFilters = {}): Promise<NetworkRoutesResponse> {
+    return this.request<NetworkRoutesResponse>('GET', `/v1/network/routes${networkQs(filters)}`);
+  }
+
+  async listNetworkBindings(filters: NetworkListFilters = {}): Promise<NetworkBindingsResponse> {
+    return this.request<NetworkBindingsResponse>('GET', `/v1/network/bindings${networkQs(filters)}`);
+  }
+
+  async getNetworkIsolation(): Promise<NetworkIsolationResponse> {
+    return this.request<NetworkIsolationResponse>('GET', '/v1/network/isolation');
+  }
+}
+
+function networkQs(filters: NetworkListFilters): string {
+  const params = new URLSearchParams();
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
 }
 
 // Sprint 28 — Policy Orchestrator response types
@@ -640,6 +672,7 @@ export interface CompositeRuntimeDecisionView {
   requiresSessionRotation: boolean;
   requiresFragmentRotation: boolean;
   requiresFingerprintRotation: boolean;
+  requiresIdentityRotation?: boolean;
   reason: string;
   signals: PolicySignalView[];
   conflicts: PolicyConflictView[];
@@ -662,6 +695,71 @@ export interface PolicyOrchestratorSignalsResponse {
   signals: PolicySignalView[];
 }
 
+/** Optional filters for `grl runtime policy signals` (Sprint 29). */
+export interface PolicySignalFilters {
+  source?: string;
+  action?: string;
+  severity?: string;
+  limit?: number;
+}
+
 export interface PolicyOrchestratorLastDecisionResponse {
   decision: CompositeRuntimeDecisionView | null;
+}
+
+// Sprint 30 — Network isolation response types (metadata only).
+export interface NetworkListFilters {
+  limit?: number;
+}
+
+export interface RelayProfileView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  isolationLevel: string;
+  supportsDnsIsolation: boolean;
+  tags: string[];
+  createdAt: number;
+}
+
+export interface RelayRouteView {
+  id: string;
+  relayProfileId: string;
+  compartmentId?: string;
+  personaId?: string;
+  fragmentId?: string;
+  assignedAt: number;
+  active: boolean;
+}
+
+export interface NetworkBindingView {
+  compartmentId: string;
+  relayRouteId: string;
+  isolationLevel: string;
+  createdAt: number;
+}
+
+export interface NetworkRelaysResponse {
+  relays: RelayProfileView[];
+}
+export interface NetworkRoutesResponse {
+  routes: RelayRouteView[];
+}
+export interface NetworkBindingsResponse {
+  bindings: NetworkBindingView[];
+}
+export interface NetworkIsolationResponse {
+  dnsPolicy: {
+    enabled: boolean;
+    isolatePerCompartment: boolean;
+    isolatePerPersona: boolean;
+    isolatePerFragment: boolean;
+  };
+  rotationPolicy: {
+    enabled: boolean;
+    rotateOnPersonaChange: boolean;
+    rotateOnCategoryChange: boolean;
+    rotateOnCriticalRisk: boolean;
+    maxAssignmentsPerRoute: number;
+  };
 }

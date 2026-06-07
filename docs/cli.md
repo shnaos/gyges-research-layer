@@ -564,12 +564,32 @@ grl runtime policy --output json
 
 ### `grl runtime policy signals`
 
-List accumulated policy signals from all execution pipeline gates (Sprint 28).
+List buffered policy signals from all execution pipeline gates (Sprint 28). The
+buffer is bounded (FIFO, default 500 signals).
 
 ```bash
 grl runtime policy signals
 grl runtime policy signals --output json
 ```
+
+**Filters (Sprint 29)** — compose with AND semantics; `--limit` keeps the most
+recent matching signals. An invalid value is rejected with HTTP 400 (surfaced as
+a CLI error):
+
+```bash
+grl runtime policy signals --source multi_agent
+grl runtime policy signals --severity high
+grl runtime policy signals --action deny
+grl runtime policy signals --limit 20
+grl runtime policy signals --source multi_agent --severity high --output json
+```
+
+| Flag | Values |
+|---|---|
+| `--source` | `capability_graph`, `multi_agent`, `behavioral_privacy`, `persona_isolation`, `temporal_obfuscation`, `transport_fingerprint`, `trust_reputation`, `adaptive_defense`, `capability_firewall`, `privacy_boundary`, `transport_policy`, `sandbox` |
+| `--action` | `allow`, `delay`, `rotate_session`, `rotate_fragment`, `rotate_fingerprint`, `require_approval`, `cooldown`, `temporary_block`, `deny` |
+| `--severity` | `info`, `low`, `medium`, `high`, `critical` |
+| `--limit` | positive integer |
 
 ---
 

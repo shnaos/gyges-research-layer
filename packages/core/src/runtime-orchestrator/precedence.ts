@@ -23,6 +23,7 @@ export const ACTION_PRECEDENCE: readonly UnifiedPrivacyAction[] = [
   'rotate_session',
   'rotate_fragment',
   'rotate_fingerprint',
+  'rotate_identity',
   'require_approval',
   'cooldown',
   'temporary_block',
@@ -33,7 +34,8 @@ export const ACTION_PRECEDENCE: readonly UnifiedPrivacyAction[] = [
 export const ROTATION_ACTIONS: ReadonlySet<UnifiedPrivacyAction> = new Set([
   'rotate_session',
   'rotate_fragment',
-  'rotate_fingerprint'
+  'rotate_fingerprint',
+  'rotate_identity'
 ]);
 
 /**

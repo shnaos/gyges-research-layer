@@ -18,6 +18,10 @@
  *  - All inputs / outputs are copied defensively — no caller mutation can
  *    corrupt internal state.
  *  - Never stores tokens, secrets, or raw request input.
+ *  - The signal inspection buffer is BOUNDED (Sprint 29): it never grows past
+ *    `maxSignals` (default 500). Overflow evicts the oldest signals FIFO so
+ *    memory can never grow without bound. `lastDecision` is preserved across
+ *    eviction.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -37,6 +41,30 @@ import {
   precedenceOf
 } from './precedence.js';
 import { detectConflicts } from './conflicts.js';
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+/** Default upper bound on the orchestrator's rolling signal inspection buffer. */
+export const DEFAULT_MAX_SIGNALS = 500;
+
+/** Construction options for {@link RuntimePolicyOrchestrator}. */
+export interface RuntimePolicyOrchestratorOptions {
+  /**
+   * Maximum number of signals retained in the rolling inspection buffer.
+   * Overflow evicts the oldest signals FIFO. Defaults to {@link DEFAULT_MAX_SIGNALS}.
+   * Values below 1 are clamped to 1 (fail-closed: the buffer always retains at
+   * least the most recent signal).
+   */
+  maxSignals?: number;
+}
+
+/** Result of recording a batch of signals into the bounded buffer. */
+export interface RecordSignalsResult {
+  /** Number of signals evicted (FIFO) to keep the buffer within `maxSignals`. */
+  evicted: number;
+}
 
 // ---------------------------------------------------------------------------
 // RuntimePolicyOrchestrator
@@ -64,10 +92,20 @@ export class RuntimePolicyOrchestrator {
   private readonly _policies: Map<string, CompositePrivacyPolicy> = new Map();
   private _signals: PolicySignal[] = [];
   private _lastDecision: CompositeRuntimeDecision | null = null;
+  private readonly _maxSignals: number;
 
-  constructor() {
+  constructor(options: RuntimePolicyOrchestratorOptions = {}) {
+    // Fail-closed: a non-positive or non-finite bound is clamped to 1 so the
+    // buffer is always bounded and always retains the most recent signal.
+    const requested = options.maxSignals ?? DEFAULT_MAX_SIGNALS;
+    this._maxSignals = Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : DEFAULT_MAX_SIGNALS;
     // Seed with the default bootstrap policy.
     this.registerPolicy(DEFAULT_COMPOSITE_PRIVACY_POLICY);
+  }
+
+  /** The maximum number of signals retained in the rolling inspection buffer. */
+  get maxSignals(): number {
+    return this._maxSignals;
   }
 
   // ---------------------------------------------------------------------------
@@ -110,24 +148,58 @@ export class RuntimePolicyOrchestrator {
   // ---------------------------------------------------------------------------
 
   /**
-   * Emit a signal into the orchestrator's buffer.
+   * Emit a single signal into the orchestrator's rolling inspection buffer.
    *
-   * The signal is copied defensively. Must be called by each pipeline gate
-   * as it runs, BEFORE `flush()` is called at the end of the pipeline.
+   * The signal is copied defensively. The buffer is bounded: if appending the
+   * signal would exceed `maxSignals`, the oldest signal is evicted FIFO.
+   *
+   * Returns the number of signals evicted (0 or 1).
    */
-  emit(signal: PolicySignal): void {
-    this._signals.push({
-      ...signal,
-      ...(signal.metadata !== undefined ? { metadata: { ...signal.metadata } } : {})
-    });
+  emit(signal: PolicySignal): number {
+    return this.recordSignals([signal]).evicted;
   }
 
-  /** Return all signals accumulated since the last `flush()` (defensive copies). */
+  /**
+   * Record a batch of signals into the rolling inspection buffer.
+   *
+   * Signals are copied defensively and appended in order. If the buffer would
+   * exceed `maxSignals`, the oldest signals are evicted FIFO until it fits.
+   * `lastDecision` is never affected by recording or eviction.
+   *
+   * Returns how many signals were evicted to stay within `maxSignals`.
+   */
+  recordSignals(signals: PolicySignal[]): RecordSignalsResult {
+    for (const signal of signals) {
+      this._signals.push({
+        ...signal,
+        ...(signal.metadata !== undefined ? { metadata: { ...signal.metadata } } : {})
+      });
+    }
+    let evicted = 0;
+    if (this._signals.length > this._maxSignals) {
+      evicted = this._signals.length - this._maxSignals;
+      // FIFO eviction: drop the oldest signals.
+      this._signals.splice(0, evicted);
+    }
+    return { evicted };
+  }
+
+  /** Return all signals currently retained in the bounded buffer (defensive copies). */
   listSignals(): PolicySignal[] {
     return this._signals.map((s) => ({
       ...s,
       ...(s.metadata !== undefined ? { metadata: { ...s.metadata } } : {})
     }));
+  }
+
+  /** Number of signals currently retained in the bounded buffer. */
+  signalCount(): number {
+    return this._signals.length;
+  }
+
+  /** Clear the rolling inspection buffer. `lastDecision` is preserved. */
+  clearSignals(): void {
+    this._signals = [];
   }
 
   // ---------------------------------------------------------------------------
@@ -327,6 +399,7 @@ function buildDecision(
     requiresSessionRotation: rotations?.has('rotate_session') ?? false,
     requiresFragmentRotation: rotations?.has('rotate_fragment') ?? false,
     requiresFingerprintRotation: rotations?.has('rotate_fingerprint') ?? false,
+    requiresIdentityRotation: rotations?.has('rotate_identity') ?? false,
     reason,
     signals: signals.map((s) => ({
       ...s,

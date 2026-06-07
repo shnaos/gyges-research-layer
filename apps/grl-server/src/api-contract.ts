@@ -196,6 +196,7 @@ export interface ExecuteMockCapabilityHttpResponse {
     rotated: boolean;
   };
   runtimePolicy?: CompositeRuntimeDecisionView;
+  networkIsolation?: NetworkIsolationDecisionView;
 }
 
 /** Trust level band a compartment falls into (Sprint 14). */
@@ -575,7 +576,12 @@ export type SecurityEventTypeView =
   | 'user_agent_rotated'
   | 'runtime_policy_evaluated'
   | 'runtime_policy_conflict_detected'
-  | 'runtime_policy_decision_applied';
+  | 'runtime_policy_decision_applied'
+  | 'runtime_policy_signal_evicted'
+  | 'relay_route_assigned'
+  | 'relay_route_rotated'
+  | 'network_isolation_enforced'
+  | 'network_isolation_denied';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -1332,6 +1338,7 @@ export interface CompositeRuntimeDecisionView {
   requiresSessionRotation: boolean;
   requiresFragmentRotation: boolean;
   requiresFingerprintRotation: boolean;
+  requiresIdentityRotation: boolean;
   reason: string;
   signals: PolicySignalView[];
   conflicts: PolicyConflictView[];
@@ -1360,4 +1367,90 @@ export interface PolicyOrchestratorSignalsHttpResponse {
 /** Response body for `GET /v1/runtime/policy-orchestrator/last-decision`. */
 export interface PolicyOrchestratorLastDecisionHttpResponse {
   decision: CompositeRuntimeDecisionView | null;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 30 — Privacy Transport Relay & Network Isolation Layer
+//
+// All views are metadata only. They NEVER carry an IP, host, URL, DNS name,
+// endpoint, credential, token, or raw caller input. Relays and routes are
+// opaque local identifiers.
+// ---------------------------------------------------------------------------
+
+/** Public view of a relay profile (no host / IP / endpoint). */
+export interface RelayProfileView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  isolationLevel: string;
+  supportsDnsIsolation: boolean;
+  tags: string[];
+  createdAt: number;
+}
+
+/** Public view of a logical relay route (opaque id only). */
+export interface RelayRouteView {
+  id: string;
+  relayProfileId: string;
+  compartmentId?: string;
+  personaId?: string;
+  fragmentId?: string;
+  assignedAt: number;
+  active: boolean;
+}
+
+/** Public view of a compartment→route binding. */
+export interface NetworkCompartmentBindingView {
+  compartmentId: string;
+  relayRouteId: string;
+  isolationLevel: string;
+  createdAt: number;
+}
+
+/** Public view of the DNS isolation policy (metadata model only). */
+export interface DnsIsolationPolicyView {
+  enabled: boolean;
+  isolatePerCompartment: boolean;
+  isolatePerPersona: boolean;
+  isolatePerFragment: boolean;
+}
+
+/** Public view of the relay rotation policy. */
+export interface RelayRotationPolicyView {
+  enabled: boolean;
+  rotateOnPersonaChange: boolean;
+  rotateOnCategoryChange: boolean;
+  rotateOnCriticalRisk: boolean;
+  maxAssignmentsPerRoute: number;
+}
+
+/** Per-request network-isolation decision surfaced on execute responses. */
+export interface NetworkIsolationDecisionView {
+  allowed: boolean;
+  relayProfileId?: string;
+  relayRouteId?: string;
+  isolationLevel: string;
+  shouldRotate: boolean;
+  reason: string;
+}
+
+/** Response body for `GET /v1/network/relays`. */
+export interface NetworkRelaysHttpResponse {
+  relays: RelayProfileView[];
+}
+
+/** Response body for `GET /v1/network/routes`. */
+export interface NetworkRoutesHttpResponse {
+  routes: RelayRouteView[];
+}
+
+/** Response body for `GET /v1/network/bindings`. */
+export interface NetworkBindingsHttpResponse {
+  bindings: NetworkCompartmentBindingView[];
+}
+
+/** Response body for `GET /v1/network/isolation` — runtime isolation policies. */
+export interface NetworkIsolationHttpResponse {
+  dnsPolicy: DnsIsolationPolicyView;
+  rotationPolicy: RelayRotationPolicyView;
 }

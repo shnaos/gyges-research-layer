@@ -161,6 +161,26 @@ interface WireAgentActionResponse {
   updatedAt: number;
 }
 
+// Sprint 29 — runtime policy signal source/action/severity vocabularies and
+// the optional filter set accepted by listRuntimePolicySignals().
+export type PolicySignalSource =
+  | 'capability_graph' | 'multi_agent' | 'behavioral_privacy' | 'persona_isolation'
+  | 'temporal_obfuscation' | 'transport_fingerprint' | 'trust_reputation'
+  | 'adaptive_defense' | 'capability_firewall' | 'privacy_boundary'
+  | 'transport_policy' | 'sandbox';
+export type UnifiedPrivacyAction =
+  | 'allow' | 'delay' | 'rotate_session' | 'rotate_fragment' | 'rotate_fingerprint'
+  | 'require_approval' | 'cooldown' | 'temporary_block' | 'deny';
+export type PolicySignalSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+/** Optional filters for {@link GrlAgentClient.listRuntimePolicySignals}. */
+export interface RuntimePolicySignalFilters {
+  source?: PolicySignalSource;
+  action?: UnifiedPrivacyAction;
+  severity?: PolicySignalSeverity;
+  limit?: number;
+}
+
 // Sprint 28 — Runtime Policy Orchestrator wire types
 interface WirePolicySignalView {
   id: string;
@@ -189,6 +209,7 @@ interface WireCompositeRuntimeDecisionView {
   requiresSessionRotation: boolean;
   requiresFragmentRotation: boolean;
   requiresFingerprintRotation: boolean;
+  requiresIdentityRotation: boolean;
   reason: string;
   signals: WirePolicySignalView[];
   conflicts: WirePolicyConflictView[];
@@ -213,6 +234,64 @@ interface WirePolicyOrchestratorSignalsResponse {
 
 interface WirePolicyOrchestratorLastDecisionResponse {
   decision: WireCompositeRuntimeDecisionView | null;
+}
+
+// Sprint 30 — Network isolation wire types (metadata only).
+export interface NetworkListFilters {
+  limit?: number;
+}
+
+export interface WireRelayProfileView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  isolationLevel: string;
+  supportsDnsIsolation: boolean;
+  tags: string[];
+  createdAt: number;
+}
+
+export interface WireRelayRouteView {
+  id: string;
+  relayProfileId: string;
+  compartmentId?: string;
+  personaId?: string;
+  fragmentId?: string;
+  assignedAt: number;
+  active: boolean;
+}
+
+export interface WireNetworkBindingView {
+  compartmentId: string;
+  relayRouteId: string;
+  isolationLevel: string;
+  createdAt: number;
+}
+
+export interface WireNetworkIsolationResponse {
+  dnsPolicy: {
+    enabled: boolean;
+    isolatePerCompartment: boolean;
+    isolatePerPersona: boolean;
+    isolatePerFragment: boolean;
+  };
+  rotationPolicy: {
+    enabled: boolean;
+    rotateOnPersonaChange: boolean;
+    rotateOnCategoryChange: boolean;
+    rotateOnCriticalRisk: boolean;
+    maxAssignmentsPerRoute: number;
+  };
+}
+
+interface WireNetworkRelaysResponse {
+  relays: WireRelayProfileView[];
+}
+interface WireNetworkRoutesResponse {
+  routes: WireRelayRouteView[];
+}
+interface WireNetworkBindingsResponse {
+  bindings: WireNetworkBindingView[];
 }
 
 // ---------------------------------------------------------------------------
@@ -798,14 +877,24 @@ export class GrlAgentClient {
   }
 
   /**
-   * List all accumulated policy signals from the runtime orchestrator.
-   * Returns metadata only — never raw input, tokens, or secrets.
+   * List buffered policy signals from the runtime orchestrator.
+   *
+   * Sprint 29 — optional filters (`source`, `action`, `severity`, `limit`) are
+   * sent as query params and validated server-side; an invalid value yields a
+   * `capability_failed` error (HTTP 400). Returns metadata only — never raw
+   * input, tokens, or secrets.
    */
-  async listRuntimePolicySignals(): Promise<WirePolicySignalView[]> {
-    const wire = await this.request<WirePolicyOrchestratorSignalsResponse>(
-      'GET',
-      '/v1/runtime/policy-orchestrator/signals'
-    );
+  async listRuntimePolicySignals(
+    filters: RuntimePolicySignalFilters = {}
+  ): Promise<WirePolicySignalView[]> {
+    const params = new URLSearchParams();
+    if (filters.source !== undefined) params.set('source', filters.source);
+    if (filters.action !== undefined) params.set('action', filters.action);
+    if (filters.severity !== undefined) params.set('severity', filters.severity);
+    if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+    const query = params.toString();
+    const path = `/v1/runtime/policy-orchestrator/signals${query ? `?${query}` : ''}`;
+    const wire = await this.request<WirePolicyOrchestratorSignalsResponse>('GET', path);
     return wire.signals;
   }
 
@@ -821,4 +910,45 @@ export class GrlAgentClient {
     );
     return wire.decision;
   }
+
+  // ---------------------------------------------------------------------------
+  // Sprint 30 — Privacy Transport Relay & Network Isolation
+  //
+  // Metadata only. These NEVER return a host, IP, URL, DNS name, endpoint,
+  // credential, token, or raw input — only opaque relay/route ids and
+  // structural isolation metadata.
+  // ---------------------------------------------------------------------------
+
+  /** List registered relay profiles. Optional `limit`. */
+  async listRelayProfiles(filters: NetworkListFilters = {}): Promise<WireRelayProfileView[]> {
+    const path = `/v1/network/relays${networkQuery(filters)}`;
+    const wire = await this.request<WireNetworkRelaysResponse>('GET', path);
+    return wire.relays;
+  }
+
+  /** List logical relay routes (opaque ids only). Optional `limit`. */
+  async listRelayRoutes(filters: NetworkListFilters = {}): Promise<WireRelayRouteView[]> {
+    const path = `/v1/network/routes${networkQuery(filters)}`;
+    const wire = await this.request<WireNetworkRoutesResponse>('GET', path);
+    return wire.routes;
+  }
+
+  /** List compartment→route bindings. Optional `limit`. */
+  async listNetworkBindings(filters: NetworkListFilters = {}): Promise<WireNetworkBindingView[]> {
+    const path = `/v1/network/bindings${networkQuery(filters)}`;
+    const wire = await this.request<WireNetworkBindingsResponse>('GET', path);
+    return wire.bindings;
+  }
+
+  /** Get the DNS + rotation isolation policy metadata. */
+  async getNetworkIsolation(): Promise<WireNetworkIsolationResponse> {
+    return this.request<WireNetworkIsolationResponse>('GET', '/v1/network/isolation');
+  }
+}
+
+function networkQuery(filters: NetworkListFilters): string {
+  const params = new URLSearchParams();
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  const q = params.toString();
+  return q ? `?${q}` : '';
 }
