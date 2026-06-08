@@ -9,12 +9,12 @@ import {
 } from '../../../packages/core/src/index.js';
 import { SessionManager } from '../../../packages/identity-compartment/src/index.js';
 import { YamlPolicyEngine } from '../../../packages/policy-engine/src/index.js';
-import { SearchAdapter, SearxngAdapter } from '../../../packages/search-adapter-searxng/src/index.js';
-import { SocksEndpoint, TransportRouter } from '../../../packages/transport-router/src/index.js';
+import { SearchAdapter, SearchResult, SearxngAdapter } from '../../../packages/search-adapter-searxng/src/index.js';
+import { SocksEndpoint, TransportClient, TransportRouter } from '../../../packages/transport-router/src/index.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const repositoryRoot = resolve(__dirname, '../../../');
+const __filename : string= fileURLToPath(import.meta.url);
+const __dirname : string= dirname(__filename);
+const repositoryRoot : string= resolve(__dirname, '../../../');
 
 export interface ServerDeps {
   firewall: CapabilityFirewall;
@@ -53,8 +53,8 @@ function socksFor(
  * agent never reaches the search engine, nor chooses its own transport.
  */
 export function createApp(deps: ServerDeps): express.Express {
-  const log = deps.logger ?? (() => {});
-  const app = express();
+  const log: (event: string, payload: unknown) => void = deps.logger ?? (() => {});
+  const app: express.Express = express();
   app.use(express.json());
 
   app.post('/capabilities/execute', async (req, res) => {
@@ -65,7 +65,7 @@ export function createApp(deps: ServerDeps): express.Express {
     }
 
     const request: CapabilityRequest = req.body;
-    const decision = deps.firewall.evaluate(request);
+    const decision: { allowed: boolean; transport?: TransportType } = deps.firewall.evaluate(request);
     log('capability.execute', { request, decision });
 
     if (!decision.allowed) {
@@ -76,7 +76,7 @@ export function createApp(deps: ServerDeps): express.Express {
       return res.status(501).json({ decision, error: `Tool not implemented: ${request.tool}` });
     }
 
-    const query = (request.input as { query?: string })?.query;
+    const query: string | undefined = (request.input as { query?: string })?.query;
     if (!query) {
       return res.status(400).json({ decision, error: 'input.query is required for search.' });
     }
@@ -85,7 +85,7 @@ export function createApp(deps: ServerDeps): express.Express {
 
     // Bind (or reuse) the compartment's isolated identity. A compartment is
     // permanently bound to one transport: mixing is rejected (anti-correlation).
-    let identity;
+    let identity: { userAgent: string; dnsPolicy: 'system' | 'remote'; sessionId: string };
     try {
       identity = deps.sessionManager.getOrCreate(request.compartment, {
         transport,
@@ -97,7 +97,7 @@ export function createApp(deps: ServerDeps): express.Express {
 
     // Build a transport-bound client. Fail closed: if Tor/proxy cannot be set
     // up, the request is denied — never silently downgraded to direct.
-    let client;
+    let client: TransportClient;
     try {
       client = deps.transportRouter.createClient({
         type: transport,
@@ -112,7 +112,7 @@ export function createApp(deps: ServerDeps): express.Express {
     }
 
     try {
-      const results = await deps.searchAdapter.search(query, client);
+      const results: SearchResult[] = await deps.searchAdapter.search(query, client);
       deps.sessionManager.recordHistory(request.compartment, { tool: 'search', query });
       log('search', {
         agentId: request.agentId,
@@ -129,7 +129,7 @@ export function createApp(deps: ServerDeps): express.Express {
 }
 
 function fileLogger(event: string, payload: unknown): void {
-  const logPath = resolve(repositoryRoot, 'logs/grl.log');
+  const logPath :string= resolve(repositoryRoot, 'logs/grl.log');
   mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, `${new Date().toISOString()} ${event} ${JSON.stringify(payload)}\n`, 'utf8');
 }
@@ -141,7 +141,7 @@ function parseSocksEnv(value: string | undefined, defaultPort: number): SocksEnd
 }
 
 function startServer(): void {
-  const policyPath = resolve(repositoryRoot, 'policies/default.yaml');
+  const policyPath: string = resolve(repositoryRoot, 'policies/default.yaml');
   const deps: ServerDeps = {
     firewall: new CapabilityFirewall(YamlPolicyEngine.fromFile(policyPath)),
     sessionManager: new SessionManager(),
@@ -153,8 +153,8 @@ function startServer(): void {
     logger: fileLogger
   };
 
-  const app = createApp(deps);
-  const port = Number(process.env.PORT ?? 3000);
+  const app : express.Express= createApp(deps);
+  const port: number = Number(process.env.PORT ?? 3000);
   app.listen(port, () => {
     fileLogger('server.start', { port });
     // eslint-disable-next-line no-console
@@ -162,7 +162,7 @@ function startServer(): void {
   });
 }
 
-const invokedDirectly =
+const invokedDirectly : boolean =
   Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (invokedDirectly) {

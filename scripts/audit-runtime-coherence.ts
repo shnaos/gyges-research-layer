@@ -27,8 +27,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
+const ROOT: string = path.resolve(__dirname, '..');
 
 type Check = { ok: boolean; message: string };
 const checks: Check[] = [];
@@ -41,8 +41,8 @@ function read(rel: string): string {
 
 // ─── 1 + 2: local-api.ts must be network-primitive-free and not import legacy transport ───
 
-const LOCAL_API = 'apps/grl-server/src/local-api.ts';
-const localApi = read(LOCAL_API);
+const LOCAL_API: string = 'apps/grl-server/src/local-api.ts';
+const localApi: string = read(LOCAL_API);
 
 // Network primitives that would indicate the active server reaching the network
 // directly instead of via an execution-engine adapter. `dns` is matched only as
@@ -66,7 +66,7 @@ for (const { re, label } of FORBIDDEN_PRIMITIVES) {
   }
 }
 
-const LEGACY_IMPORTS = [
+const LEGACY_IMPORTS: string[] = [
   'packages/transport-router',
   'packages/search-adapter-searxng'
 ];
@@ -80,7 +80,7 @@ for (const imp of LEGACY_IMPORTS) {
 
 // ─── 3: the three core privacy engines exist (behavioral, persona, temporal) ───
 
-const CORE_ENGINES = [
+const CORE_ENGINES: string[] = [
   'packages/core/src/behavioral-privacy/engine.ts',
   'packages/core/src/persona-isolation/personas.ts',
   'packages/core/src/temporal-obfuscation/engine.ts'
@@ -98,7 +98,7 @@ for (const f of CORE_ENGINES) {
 process.stdout.write('\nGRL Runtime Coherence Audit (Sprint 31)\n');
 process.stdout.write('─'.repeat(60) + '\n');
 for (const c of checks) process.stdout.write(`  ${c.message}\n`);
-const failed = checks.filter((c) => !c.ok);
+const failed: Check[] = checks.filter((c: Check) => !c.ok);
 process.stdout.write('─'.repeat(60) + '\n');
 if (failed.length > 0) {
   process.stdout.write(`✗ ${failed.length} coherence invariant(s) violated.\n`);

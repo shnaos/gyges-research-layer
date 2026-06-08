@@ -36,7 +36,8 @@ afterEach(() => {
 async function startApp(): Promise<{ base: string }> {
   const app: express.Express = createLocalApiApp({
     firewall: buildBootstrapFirewall(),
-    executionEngine: buildMockExecutionEngine()
+    executionEngine: buildMockExecutionEngine(),
+    mockFallbackEnabled: true
   }) as express.Express;
   const server = app.listen(0, DEFAULT_HOST);
   await new Promise<void>((r) => server.once('listening', r));

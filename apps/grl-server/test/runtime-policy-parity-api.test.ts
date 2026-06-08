@@ -45,6 +45,7 @@ async function startApp(
   const app: express.Express = createLocalApiApp({
     firewall: buildBootstrapFirewall(),
     executionEngine: buildMockExecutionEngine(),
+    mockFallbackEnabled: true,
     runtimePolicyOrchestrator: orchestrator,
     agentRegistry: registry
   }) as express.Express;

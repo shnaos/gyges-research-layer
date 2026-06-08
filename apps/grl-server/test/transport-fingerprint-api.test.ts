@@ -41,6 +41,7 @@ async function startApp(
     incidentDetector: buildIncidentDetector(),
     trustEngine: buildCompartmentTrustEngine(),
     transportFingerprintEngine: fingerprintEngine,
+    mockFallbackEnabled: true,
     ...extra
   })
   const server = app.listen(0, DEFAULT_HOST)

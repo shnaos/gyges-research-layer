@@ -119,6 +119,7 @@ describe('temporal delay is a real, bounded, opt-in effect', () => {
   it('is OFF by default — no sleep, appliedDelayMs 0 even when a delay is computed', async () => {
     const slept: number[] = [];
     const { base } = await startApp({
+      mockFallbackEnabled: true,
       temporalObfuscationEngine: delayingTemporalEngine(),
       sleep: async (ms: number) => { slept.push(ms); }
     });
@@ -131,6 +132,7 @@ describe('temporal delay is a real, bounded, opt-in effect', () => {
   it('when enabled, the computed delay is actually awaited (spy), deterministic and capped', async () => {
     const slept: number[] = [];
     const { base } = await startApp({
+      mockFallbackEnabled: true,
       temporalObfuscationEngine: delayingTemporalEngine(),
       executionDelayEnabled: true,
       maxExecutionDelayMs: 250,
@@ -164,6 +166,7 @@ describe('temporal delay is a real, bounded, opt-in effect', () => {
 
   it('really waits on the wall clock (one real-timing test, small cap)', async () => {
     const { base } = await startApp({
+      mockFallbackEnabled: true,
       temporalObfuscationEngine: delayingTemporalEngine(),
       executionDelayEnabled: true,
       maxExecutionDelayMs: 40
@@ -191,7 +194,7 @@ describe('persona / route changes produce real rotations on execute', () => {
         rotateOnCriticalRisk: false, maxAssignmentsPerRoute: 1
       }
     });
-    const { base } = await startApp({ networkIsolationEngine });
+    const { base } = await startApp({ mockFallbackEnabled: true, networkIsolationEngine });
     await post(base, '/v1/capabilities/execute', BODY); // assigns route + session
     const second = await post(base, '/v1/capabilities/execute', BODY); // route rotates → session rotates
     expect(second.json.networkIsolation.shouldRotate).toBe(true);
@@ -203,7 +206,7 @@ describe('persona / route changes produce real rotations on execute', () => {
   });
 
   it('a category change rotates the route AND the fingerprint on execute', async () => {
-    const { base } = await startApp();
+    const { base } = await startApp({ mockFallbackEnabled: true });
     const a = await post(base, '/v1/capabilities/execute', {
       ...BODY,
       input: { query: 'q', categoryHint: 'crypto' }

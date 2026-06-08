@@ -4834,7 +4834,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       // receive an honest error rather than simulated output.
       // To opt in: pass mockFallbackEnabled:true (offline dev only).
       // For dry-run testing: use /v1/capabilities/execute-mock instead.
-      collector.emit({ source: 'transport_policy', action: 'deny', severity: 'warning', reason: 'Mock transport is not a real transport. Configure a real transport or use /v1/capabilities/execute-mock.' });
+      collector.emit({ source: 'transport_policy', action: 'deny', severity: 'medium', reason: 'Mock transport is not a real transport. Configure a real transport or use /v1/capabilities/execute-mock.' });
       const response: ExecuteCapabilityHttpResponse = {
         decision: 'denied',
         reason: 'No real transport configured. Use /v1/capabilities/execute-mock for dry-run testing, or configure SearXNG in your runtime config.',

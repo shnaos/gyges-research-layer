@@ -184,11 +184,12 @@ async function startApp(overrides: Parameters<typeof createLocalApiApp>[0]): Pro
 // ---------------------------------------------------------------------------
 
 describe('POST /v1/capabilities/execute — default mock config', () => {
-  it('executes with mock transport when no searxng config is present', async () => {
+  it('executes with mock transport when mockFallbackEnabled is set (opt-in)', async () => {
     const base = await startApp({
       firewall: buildBootstrapFirewall(),
       approvalQueue: buildApprovalQueue(),
-      executionEngine: buildMockExecutionEngine()
+      executionEngine: buildMockExecutionEngine(),
+      mockFallbackEnabled: true
     });
     const res = await execute(base, ALLOW_BODY);
     expect(res.status).toBe(200);
