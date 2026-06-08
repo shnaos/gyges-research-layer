@@ -9,7 +9,7 @@
 
 import { Command } from 'commander';
 import { GrlApiClient } from './client/api-client.js';
-import { resolveCliConfig } from './config/cli-config.js';
+import { GrlCliConfig, resolveCliConfig } from './config/cli-config.js';
 import { CliError } from './errors.js';
 import { runHealth } from './commands/health.js';
 import { runSearch } from './commands/search.js';
@@ -32,7 +32,7 @@ import {
   runPrivacyHeaderPolicies
 } from './commands/privacy.js';
 
-const program = new Command();
+const program: Command = new Command();
 
 program
   .name('grl')
@@ -76,8 +76,8 @@ program
   .option('--severity <severity>', 'Filter by severity (debug|info|warning|critical)')
   .option('--limit <n>', 'Maximum number of events to show')
   .action(async (opts: { type?: string; severity?: string; limit?: string }) => {
-    await runCommand(async (client, cfg) => {
-      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
+      const limit: number | undefined = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
       await runAudit({ type: opts.type, severity: opts.severity, limit }, client, cfg);
     });
   });
@@ -89,7 +89,7 @@ program
   .command('trust [compartmentId]')
   .description('List trust profiles or show a single profile')
   .action(async (compartmentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runTrust(compartmentId, client, cfg);
     });
   });
@@ -101,7 +101,7 @@ program
   .command('incidents')
   .description('List runtime security incidents')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runIncidents(client, cfg);
     });
   });
@@ -182,8 +182,8 @@ policyCmd
   .option('--severity <severity>', 'Filter by severity (info|low|medium|high|critical)')
   .option('--limit <n>', 'Maximum number of signals to show')
   .action(async (opts: { source?: string; action?: string; severity?: string; limit?: string }) => {
-    await runCommand(async (client, cfg) => {
-      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
+      const limit: number | undefined = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
       await runRuntimePolicySignals(client, cfg, {
         source: opts.source,
         action: opts.action,
@@ -197,7 +197,7 @@ policyCmd
   .command('last-decision')
   .description('Show the last composite runtime policy decision')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runRuntimePolicyLastDecision(client, cfg);
     });
   });
@@ -209,7 +209,7 @@ program
   .command('transports')
   .description('List registered transport manifests')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runTransports(client, cfg);
     });
   });
@@ -226,8 +226,8 @@ networkCmd
   .description('List logical relay profiles')
   .option('--limit <n>', 'Maximum number of relays to show')
   .action(async (opts: { limit?: string }) => {
-    await runCommand(async (client, cfg) => {
-      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
+      const limit: number | undefined = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
       await runNetworkRelays(client, cfg, { limit });
     });
   });
@@ -237,8 +237,8 @@ networkCmd
   .description('List logical relay routes (opaque ids only)')
   .option('--limit <n>', 'Maximum number of routes to show')
   .action(async (opts: { limit?: string }) => {
-    await runCommand(async (client, cfg) => {
-      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
+      const limit: number | undefined = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
       await runNetworkRoutes(client, cfg, { limit });
     });
   });
@@ -248,8 +248,8 @@ networkCmd
   .description('List compartment→route bindings')
   .option('--limit <n>', 'Maximum number of bindings to show')
   .action(async (opts: { limit?: string }) => {
-    await runCommand(async (client, cfg) => {
-      const limit = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
+      const limit: number | undefined = opts.limit !== undefined ? parseInt(opts.limit, 10) : undefined;
       await runNetworkBindings(client, cfg, { limit });
     });
   });
@@ -258,7 +258,7 @@ networkCmd
   .command('isolation')
   .description('Show DNS + rotation isolation policies')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runNetworkIsolation(client, cfg);
     });
   });
@@ -274,7 +274,7 @@ privacyCmd
   .command('profiles', { isDefault: true })
   .description('List all behavioral privacy profiles')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyProfiles(client, cfg);
     });
   });
@@ -283,7 +283,7 @@ privacyCmd
   .command('profile <agentId>')
   .description('Show a single behavioral privacy profile')
   .action(async (agentId: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyProfile(agentId, client, cfg);
     });
   });
@@ -292,7 +292,7 @@ privacyCmd
   .command('fragments [agentId]')
   .description('List identity fragments, optionally filtered to one agent')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyFragments(agentId, client, cfg);
     });
   });
@@ -301,7 +301,7 @@ privacyCmd
   .command('personas [agentId]')
   .description('List search personas, optionally filtered to one agent')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyPersonas(agentId, client, cfg);
     });
   });
@@ -310,7 +310,7 @@ privacyCmd
   .command('bindings [agentId]')
   .description('List persona-fragment bindings, optionally filtered to one agent')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyBindings(agentId, client, cfg);
     });
   });
@@ -319,7 +319,7 @@ privacyCmd
   .command('temporal [agentId]')
   .description('List temporal obfuscation profiles (optionally for one agent)')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyTemporal(agentId, client, cfg);
     });
   });
@@ -328,7 +328,7 @@ privacyCmd
   .command('budgets [agentId]')
   .description('List temporal privacy budgets (optionally for one agent)')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyBudgets(agentId, client, cfg);
     });
   });
@@ -337,7 +337,7 @@ privacyCmd
   .command('fingerprints [agentId]')
   .description('List fingerprint profiles (optionally for one agent)')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyFingerprints(agentId, client, cfg);
     });
   });
@@ -346,7 +346,7 @@ privacyCmd
   .command('header-policies')
   .description('Show transport header isolation policies')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runPrivacyHeaderPolicies(client, cfg);
     });
   });
@@ -363,7 +363,7 @@ agentsCmd
   .command('list', { isDefault: true })
   .description('List all registered agent runtimes')
   .action(async () => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runAgentsList(client, cfg);
     });
   });
@@ -373,7 +373,7 @@ agentsCmd
   .command('get <agentId>')
   .description('Show the runtime state for a single agent')
   .action(async (agentId: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runAgentGet(agentId, client, cfg);
     });
   });
@@ -383,7 +383,7 @@ agentsCmd
   .command('leases [agentId]')
   .description('List active runtime leases (optionally filtered to one agent)')
   .action(async (agentId?: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runAgentLeases(agentId, client, cfg);
     });
   });
@@ -393,7 +393,7 @@ agentsCmd
   .command('evict <agentId>')
   .description('Evict an agent from the runtime')
   .action(async (agentId: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runAgentEvict(agentId, client, cfg);
     });
   });
@@ -403,7 +403,7 @@ agentsCmd
   .command('restrict <agentId>')
   .description('Restrict an agent (block further execution)')
   .action(async (agentId: string) => {
-    await runCommand(async (client, cfg) => {
+    await runCommand(async (client: GrlApiClient, cfg: GrlCliConfig) => {
       await runAgentRestrict(agentId, client, cfg);
     });
   });
@@ -412,17 +412,17 @@ agentsCmd
 // Shared runner: resolve config, build client, execute command, handle errors.
 // ---------------------------------------------------------------------------
 async function runCommand(
-  fn: (client: GrlApiClient, config: ReturnType<typeof resolveCliConfig>) => Promise<void>
+  fn: (client: GrlApiClient, config: GrlCliConfig) => Promise<void>
 ): Promise<void> {
-  const opts = program.opts<{ baseUrl?: string; timeout?: string; json?: boolean }>();
+  const opts: { baseUrl?: string; timeout?: string; json?: boolean } = program.opts<{ baseUrl?: string; timeout?: string; json?: boolean }>();
 
-  const cfg = resolveCliConfig({
+  const cfg : GrlCliConfig = resolveCliConfig({
     baseUrl: opts.baseUrl,
     timeoutMs: opts.timeout !== undefined ? parseInt(opts.timeout, 10) : undefined,
     output: opts.json ? 'json' : undefined
   });
 
-  const client = new GrlApiClient(cfg);
+  const client: GrlApiClient = new GrlApiClient(cfg);
 
   try {
     await fn(client, cfg);
@@ -432,7 +432,7 @@ async function runCommand(
       process.exit(err.exitCode);
     }
     // Unexpected error — surface minimal info, no stack trace by default.
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg: string = err instanceof Error ? err.message : String(err);
     process.stderr.write(`error [command_failed]: ${msg}\n`);
     process.exit(5);
   }

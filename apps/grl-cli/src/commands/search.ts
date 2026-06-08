@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js';
+import type { ExecuteResponse, GrlApiClient } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { CliError } from '../errors.js';
 import { printJson } from '../format/json.js';
@@ -19,7 +19,7 @@ export async function runSearch(
     throw new CliError('invalid_arguments', 'Search query must not be empty.');
   }
 
-  const result = await client.executeSearch(query.trim());
+  const result: ExecuteResponse = await client.executeSearch(query.trim());
 
   if (config.output === 'json') {
     printJson(result);
@@ -47,7 +47,7 @@ export async function runSearch(
       pairs.push(['execution_error', result.execution.error]);
     }
     if (result.execution.output !== undefined) {
-      const output = result.execution.output;
+      const output:any | null = result.execution.output;
       if (Array.isArray(output)) {
         pairs.push(['result_count', output.length]);
       }

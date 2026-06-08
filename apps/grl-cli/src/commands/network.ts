@@ -1,4 +1,4 @@
-import type { GrlApiClient, NetworkListFilters } from '../client/api-client.js';
+import type { GrlApiClient, NetworkBindingsResponse, NetworkBindingView, NetworkIsolationResponse, NetworkListFilters, NetworkRelaysResponse, NetworkRoutesResponse, RelayProfileView, RelayRouteView } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { printJson } from '../format/json.js';
 import { printKeyValue, printTable } from '../format/table.js';
@@ -18,7 +18,7 @@ export async function runNetworkRelays(
   config: GrlCliConfig,
   filters: NetworkListFilters = {}
 ): Promise<void> {
-  const result = await client.listNetworkRelays(filters);
+  const result: NetworkRelaysResponse = await client.listNetworkRelays(filters);
   if (config.output === 'json') {
     printJson(result);
     return;
@@ -35,7 +35,7 @@ export async function runNetworkRelays(
       { header: 'ISOLATION', key: 'isolationLevel' },
       { header: 'DNS_ISO', key: 'supportsDnsIsolation' }
     ],
-    result.relays.map((r) => ({ ...r }))
+    result.relays.map((r:RelayProfileView) => ({ ...r }))
   );
 }
 
@@ -44,7 +44,7 @@ export async function runNetworkRoutes(
   config: GrlCliConfig,
   filters: NetworkListFilters = {}
 ): Promise<void> {
-  const result = await client.listNetworkRoutes(filters);
+  const result: NetworkRoutesResponse = await client.listNetworkRoutes(filters);
   if (config.output === 'json') {
     printJson(result);
     return;
@@ -61,7 +61,7 @@ export async function runNetworkRoutes(
       { header: 'PERSONA', key: 'personaId' },
       { header: 'ACTIVE', key: 'active' }
     ],
-    result.routes.map((r) => ({ ...r }))
+    result.routes.map((r: RelayRouteView) => ({ ...r }))
   );
 }
 
@@ -70,7 +70,7 @@ export async function runNetworkBindings(
   config: GrlCliConfig,
   filters: NetworkListFilters = {}
 ): Promise<void> {
-  const result = await client.listNetworkBindings(filters);
+  const result: NetworkBindingsResponse = await client.listNetworkBindings(filters);
   if (config.output === 'json') {
     printJson(result);
     return;
@@ -85,7 +85,7 @@ export async function runNetworkBindings(
       { header: 'ROUTE', key: 'relayRouteId' },
       { header: 'ISOLATION', key: 'isolationLevel' }
     ],
-    result.bindings.map((b) => ({ ...b }))
+    result.bindings.map((b: NetworkBindingView) => ({ ...b }))
   );
 }
 
@@ -93,7 +93,7 @@ export async function runNetworkIsolation(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.getNetworkIsolation();
+  const result: NetworkIsolationResponse = await client.getNetworkIsolation();
   if (config.output === 'json') {
     printJson(result);
     return;

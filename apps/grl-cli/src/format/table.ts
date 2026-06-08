@@ -31,25 +31,25 @@ function stringify(value: unknown): string {
  */
 export function renderTable(columns: TableColumn[], rows: Row[]): string {
   // Compute column widths
-  const widths = columns.map((col) => {
+  const widths: number[] = columns.map((col: TableColumn) => {
     if (col.width) return col.width;
-    const maxData = rows.reduce((max, row) => {
-      const cell = stringify(row[col.key]);
+    const maxData: number = rows.reduce((max: number, row: Row) => {
+      const cell: string = stringify(row[col.key]);
       return Math.max(max, cell.length);
     }, 0);
     return Math.max(col.header.length, maxData);
   });
 
   // Header
-  const header = columns.map((col, i) => pad(col.header, widths[i] as number)).join('   ');
-  const separator = widths.map((w) => '-'.repeat(w)).join('   ');
+  const header: string = columns.map((col: TableColumn, i: number) => pad(col.header, widths[i] as number)).join('   ');
+  const separator: string = widths.map((w: number) => '-'.repeat(w)).join('   ');
 
   if (rows.length === 0) {
     return [header, separator, '(none)'].join('\n');
   }
 
   const dataRows = rows.map((row) =>
-    columns.map((col, i) => pad(stringify(row[col.key]), widths[i] as number)).join('   ')
+    columns.map((col: TableColumn, i: number) => pad(stringify(row[col.key]), widths[i] as number)).join('   ')
   );
 
   return [header, separator, ...dataRows].join('\n');
@@ -62,7 +62,7 @@ export function printTable(columns: TableColumn[], rows: Row[]): void {
 
 /** Print a single key/value pair list (for detail views). */
 export function printKeyValue(pairs: Array<[string, unknown]>): void {
-  const keyWidth = Math.max(...pairs.map(([k]) => k.length));
+  const keyWidth: number = Math.max(...pairs.map(([k]: [string, unknown]) => k.length));
   for (const [key, value] of pairs) {
     process.stdout.write(`${pad(key, keyWidth)}   ${stringify(value)}\n`);
   }

@@ -17,8 +17,8 @@
  *  2. local-api.ts does NOT import the legacy SOCKS transport-router or the
  *     legacy search-adapter (those belong only to the legacy port-3000 server).
  *  3. The behavioral-privacy / persona-isolation / temporal-obfuscation engines
- *     exist in core (they are real engines, even if the live `execute` path does
- *     not currently invoke them — see docs/audits/pipeline-mapping.md).
+ *     exist in core and are wired into both the `execute` and `execute-mock`
+ *     paths (Sprint 32 convergence).
  *
  * Run: npm run audit:coherence
  */
@@ -78,7 +78,7 @@ for (const imp of LEGACY_IMPORTS) {
   }
 }
 
-// ─── 3: the three execute-mock-only privacy engines exist in core ───
+// ─── 3: the three core privacy engines exist (behavioral, persona, temporal) ───
 
 const CORE_ENGINES = [
   'packages/core/src/behavioral-privacy/engine.ts',

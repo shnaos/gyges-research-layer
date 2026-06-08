@@ -23,14 +23,29 @@ npm run dev:server
 # In another terminal — check health
 npm run cli -- health
 
-# Run a search
+# Run a search — returns `denied` on a fresh runtime (deny-by-default);
+# see docs/quickstart.md step 5 for the bootstrap-allowed flow.
 npm run cli -- search "privacy"
 
 # Run all validations
 npm run smoke-test
 ```
 
-See [`docs/quickstart.md`](docs/quickstart.md) for the 5-minute guide.
+See [`docs/quickstart.md`](docs/quickstart.md) for the 5-minute guide and
+[`docs/demo.md`](docs/demo.md) for a guided `input → decision → execution → audit`
+walkthrough with real runtime output.
+
+## Developer Preview
+
+- **Landing site** — a minimal, dependency-free site in [`site/`](site/) (open
+  `site/index.html`, or `python3 -m http.server -d site 8088`).
+- **Concept docs** — [`docs/capability-firewall.md`](docs/capability-firewall.md),
+  [`docs/compartments.md`](docs/compartments.md),
+  [`docs/policy-engine.md`](docs/policy-engine.md),
+  [`docs/transports.md`](docs/transports.md).
+- **Honest scope** — by default GRL runs a mock transport (no real network); the
+  only real transport is an opt-in, loopback-only SearXNG adapter. GRL is a
+  privacy layer, not an anonymity network. See [`docs/audits/`](docs/audits/).
 
 ## Package Layout
 
@@ -409,6 +424,14 @@ if (isPending(result)) console.log('Approval required:', result.approvalRequestI
 ```
 
 See [`docs/agent-sdk.md`](docs/agent-sdk.md) for the full reference.
+
+### Concepts
+
+- [`docs/capability-firewall.md`](docs/capability-firewall.md) — the deny-by-default authorization gate
+- [`docs/compartments.md`](docs/compartments.md) — identity isolation units
+- [`docs/policy-engine.md`](docs/policy-engine.md) — policy data model (active core vs legacy YAML)
+- [`docs/transports.md`](docs/transports.md) — policy-decided transport (mock default, opt-in loopback SearXNG)
+- [`docs/demo.md`](docs/demo.md) — guided execution-flow demonstration
 
 ### Architecture
 
