@@ -27,9 +27,9 @@ const CONFIG_FILE_NAME = '.grl-cli.json';
 
 function loadFileConfig(): Partial<GrlCliConfig> {
   try {
-    const path = resolve(process.cwd(), CONFIG_FILE_NAME);
-    const raw = readFileSync(path, 'utf8');
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const path: string= resolve(process.cwd(), CONFIG_FILE_NAME);
+    const raw: string = readFileSync(path, 'utf8');
+    const parsed: Record<string, unknown> = JSON.parse(raw) as Record<string, unknown>;
     const partial: Partial<GrlCliConfig> = {};
     if (typeof parsed.baseUrl === 'string') partial.baseUrl = parsed.baseUrl;
     if (typeof parsed.timeoutMs === 'number') partial.timeoutMs = parsed.timeoutMs;
@@ -45,16 +45,16 @@ function loadFileConfig(): Partial<GrlCliConfig> {
 function loadEnvConfig(): Partial<GrlCliConfig> {
   const partial: Partial<GrlCliConfig> = {};
 
-  const rawUrl = process.env['GRL_CLI_BASE_URL'];
+  const rawUrl: string | undefined = process.env['GRL_CLI_BASE_URL'];
   if (rawUrl) partial.baseUrl = rawUrl;
 
-  const rawTimeout = process.env['GRL_CLI_TIMEOUT_MS'];
+  const rawTimeout: string | undefined = process.env['GRL_CLI_TIMEOUT_MS'];
   if (rawTimeout) {
-    const parsed = Number(rawTimeout);
+    const parsed: number = Number(rawTimeout);
     if (Number.isFinite(parsed) && parsed > 0) partial.timeoutMs = parsed;
   }
 
-  const rawOutput = process.env['GRL_CLI_OUTPUT'];
+  const rawOutput: string | undefined = process.env['GRL_CLI_OUTPUT'];
   if (rawOutput === 'table' || rawOutput === 'json') {
     partial.output = rawOutput;
   }
@@ -69,12 +69,17 @@ function loadEnvConfig(): Partial<GrlCliConfig> {
 export function resolveCliConfig(
   overrides: Partial<GrlCliConfig> = {}
 ): GrlCliConfig {
-  const fileConfig = loadFileConfig();
-  const envConfig = loadEnvConfig();
+  const fileConfig: Partial<GrlCliConfig> = loadFileConfig();
+  const envConfig: Partial<GrlCliConfig> = loadEnvConfig();
+  // Drop `undefined` override values so an unset CLI flag (e.g. no --base-url)
+  // does not clobber a default or file/env value back to `undefined`.
+  const definedOverrides: Partial<GrlCliConfig> = Object.fromEntries(
+    Object.entries(overrides).filter(([, value]) => value !== undefined)
+  ) as Partial<GrlCliConfig>;
   return {
     ...DEFAULT_CLI_CONFIG,
     ...fileConfig,
     ...envConfig,
-    ...overrides
+    ...definedOverrides
   };
 }

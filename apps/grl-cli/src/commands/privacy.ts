@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js'
+import type { BehavioralProfileResponse, BehavioralProfilesResponse, BehavioralProfileView, FingerprintProfileResponse, FingerprintProfilesResponse, FingerprintProfileView, GrlApiClient, HeaderPoliciesResponse, IdentityFragmentsResponse, IdentityFragmentView, PersonaBindingsByAgentResponse, PersonaBindingsResponse, PersonaFragmentBindingView, PersonasByAgentResponse, PersonasResponse, SearchPersonaView, TemporalBudgetResponse, TemporalBudgetsResponse, TemporalBudgetView, TemporalProfileResponse, TemporalProfilesResponse, TemporalProfileView } from '../client/api-client.js'
 import type { GrlCliConfig } from '../config/cli-config.js'
 import { CliError } from '../errors.js'
 import { printJson } from '../format/json.js'
@@ -8,7 +8,7 @@ export async function runPrivacyProfiles(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listBehavioralProfiles()
+  const result: BehavioralProfilesResponse = await client.listBehavioralProfiles()
   if (config.output === 'json') {
     printJson(result)
     return
@@ -21,7 +21,7 @@ export async function runPrivacyProfiles(
       { header: 'FRAGMENTS', key: 'activeIdentityFragments' },
       { header: 'UPDATED_AT', key: 'updatedAt' }
     ],
-    result.profiles.map((profile) => ({
+    result.profiles.map((profile: BehavioralProfileView) => ({
       ...profile,
       updatedAt: new Date(profile.updatedAt).toISOString()
     }))
@@ -33,7 +33,7 @@ export async function runPrivacyProfile(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.getBehavioralProfile(agentId).catch((err: unknown) => {
+  const result :BehavioralProfileResponse = await client.getBehavioralProfile(agentId).catch((err: unknown) => {
     if (err instanceof CliError && err.code === 'command_failed') {
       throw new CliError('command_failed', `Behavioral profile not found: ${agentId}`)
     }
@@ -43,7 +43,7 @@ export async function runPrivacyProfile(
     printJson(result)
     return
   }
-  const profile = result.profile
+  const profile :BehavioralProfileView = result.profile
   printKeyValue([
     ['agentId', profile.agentId],
     ['correlationRisk', profile.correlationRisk],
@@ -60,7 +60,7 @@ export async function runPrivacyFragments(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listIdentityFragments(agentId)
+  const result: IdentityFragmentsResponse = await client.listIdentityFragments(agentId)
   if (config.output === 'json') {
     printJson(result)
     return
@@ -73,7 +73,7 @@ export async function runPrivacyFragments(
       { header: 'REQUESTS', key: 'requestCount' },
       { header: 'EXPIRES_AT', key: 'expiresAt' }
     ],
-    result.fragments.map((fragment) => ({
+    result.fragments.map((fragment: IdentityFragmentView) => ({
       ...fragment,
       active: String(fragment.active),
       expiresAt: new Date(fragment.expiresAt).toISOString()
@@ -90,7 +90,7 @@ export async function runPrivacyPersonas(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = agentId
+  const result :PersonasResponse | PersonasByAgentResponse = agentId
     ? await client.listPersonas(agentId)
     : await client.listPersonas()
   if (config.output === 'json') {
@@ -106,7 +106,7 @@ export async function runPrivacyPersonas(
       { header: 'RISK', key: 'correlationRisk' },
       { header: 'SEARCHES', key: 'searchCount' }
     ],
-    result.personas.map((persona) => ({
+    result.personas.map((persona: SearchPersonaView) => ({
       ...persona,
       active: String(persona.active)
     }))
@@ -118,7 +118,7 @@ export async function runPrivacyBindings(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = agentId
+  const result :PersonaBindingsResponse | PersonaBindingsByAgentResponse = agentId
     ? await client.listPersonaBindings(agentId)
     : await client.listPersonaBindings()
   if (config.output === 'json') {
@@ -132,7 +132,7 @@ export async function runPrivacyBindings(
       { header: 'ACTIVE', key: 'active' },
       { header: 'CREATED_AT', key: 'createdAt' }
     ],
-    result.bindings.map((binding) => ({
+    result.bindings.map((binding: PersonaFragmentBindingView) => ({
       ...binding,
       active: String(binding.active),
       createdAt: new Date(binding.createdAt).toISOString()
@@ -150,7 +150,7 @@ export async function runPrivacyTemporal(
   config: GrlCliConfig
 ): Promise<void> {
   if (agentId !== undefined) {
-    const result = await client.getTemporalProfile(agentId).catch((err: unknown) => {
+    const result: TemporalProfileResponse = await client.getTemporalProfile(agentId).catch((err: unknown) => {
       if (err instanceof CliError && err.code === 'command_failed') {
         throw new CliError('command_failed', `Temporal profile not found: ${agentId}`)
       }
@@ -160,7 +160,7 @@ export async function runPrivacyTemporal(
       printJson(result)
       return
     }
-    const p = result.profile
+    const p: TemporalProfileView = result.profile
     printKeyValue([
       ['agentId', p.agentId],
       ['cadenceRisk', p.cadenceRisk],
@@ -174,7 +174,7 @@ export async function runPrivacyTemporal(
     ])
     return
   }
-  const result = await client.listTemporalProfiles()
+  const result :TemporalProfilesResponse = await client.listTemporalProfiles()
   if (config.output === 'json') {
     printJson(result)
     return
@@ -188,7 +188,7 @@ export async function runPrivacyTemporal(
       { header: 'DELAY_MS', key: 'currentDelayMs' },
       { header: 'UPDATED_AT', key: 'updatedAt' }
     ],
-    result.profiles.map((p) => ({
+    result.profiles.map((p: TemporalProfileView) => ({
       ...p,
       updatedAt: new Date(p.updatedAt).toISOString()
     }))
@@ -201,7 +201,7 @@ export async function runPrivacyBudgets(
   config: GrlCliConfig
 ): Promise<void> {
   if (agentId !== undefined) {
-    const result = await client.getTemporalBudget(agentId).catch((err: unknown) => {
+    const result: TemporalBudgetResponse = await client.getTemporalBudget(agentId).catch((err: unknown) => {
       if (err instanceof CliError && err.code === 'command_failed') {
         throw new CliError('command_failed', `Temporal budget not found: ${agentId}`)
       }
@@ -211,7 +211,7 @@ export async function runPrivacyBudgets(
       printJson(result)
       return
     }
-    const b = result.budget
+    const b: TemporalBudgetView = result.budget
     printKeyValue([
       ['agentId', result.agentId],
       ['maxRequestsPerWindow', String(b.maxRequestsPerWindow)],
@@ -222,7 +222,7 @@ export async function runPrivacyBudgets(
     ])
     return
   }
-  const result = await client.listTemporalBudgets()
+  const result: TemporalBudgetsResponse = await client.listTemporalBudgets()
   if (config.output === 'json') {
     printJson(result)
     return
@@ -234,7 +234,7 @@ export async function runPrivacyBudgets(
       { header: 'REMAINING', key: 'remaining' },
       { header: 'RESETS_AT', key: 'resetsAt' }
     ],
-    result.budgets.map((b) => ({
+    result.budgets.map((b: TemporalBudgetView) => ({
       ...b,
       resetsAt: new Date(b.resetsAt).toISOString()
     }))
@@ -250,7 +250,7 @@ export async function runPrivacyFingerprints(
   config: GrlCliConfig
 ): Promise<void> {
   if (agentId !== undefined) {
-    const result = await client.getFingerprintProfile(agentId).catch((err: unknown) => {
+    const result: FingerprintProfileResponse = await client.getFingerprintProfile(agentId).catch((err: unknown) => {
       if (err instanceof CliError && err.code === 'command_failed') {
         throw new CliError('command_failed', `Fingerprint profile not found: ${agentId}`)
       }
@@ -260,7 +260,7 @@ export async function runPrivacyFingerprints(
       printJson(result)
       return
     }
-    const p = result.profile
+    const p: FingerprintProfileView = result.profile
     printKeyValue([
       ['agentId', p.agentId],
       ['activeFingerprintId', p.activeFingerprintId],
@@ -273,7 +273,7 @@ export async function runPrivacyFingerprints(
     ])
     return
   }
-  const result = await client.listFingerprintProfiles()
+  const result: FingerprintProfilesResponse = await client.listFingerprintProfiles()
   if (config.output === 'json') {
     printJson(result)
     return
@@ -287,7 +287,7 @@ export async function runPrivacyFingerprints(
       { header: 'REQUESTS', key: 'requestCount' },
       { header: 'USER_AGENT', key: 'assignedUserAgent' }
     ],
-    result.profiles.map((p) => ({
+    result.profiles.map((p: FingerprintProfileView) => ({
       ...p,
       rotationCount: String(p.rotationCount),
       requestCount: String(p.requestCount)
@@ -299,7 +299,7 @@ export async function runPrivacyHeaderPolicies(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.getHeaderPolicies()
+  const result: HeaderPoliciesResponse = await client.getHeaderPolicies()
   if (config.output === 'json') {
     printJson(result)
     return

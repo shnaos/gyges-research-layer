@@ -224,8 +224,15 @@ describe('persona / route changes produce real rotations on execute', () => {
 // ---------------------------------------------------------------------------
 
 describe('transport selection', () => {
-  it('execute uses the mock transport as fallback when SearXNG is disabled', async () => {
+  it('execute denies by default when transport policy resolves to mock (no real transport)', async () => {
     const { base } = await startApp();
+    const { json } = await post(base, '/v1/capabilities/execute', BODY);
+    expect(json.decision).toBe('denied');
+    expect(json.reason).toMatch(/No real transport configured/);
+  });
+
+  it('execute allows mock transport when mockFallbackEnabled is explicitly set', async () => {
+    const { base } = await startApp({ mockFallbackEnabled: true });
     const { json } = await post(base, '/v1/capabilities/execute', BODY);
     expect(json.decision).toBe('allowed');
     expect(json.execution.transportKind).toBe('mock');

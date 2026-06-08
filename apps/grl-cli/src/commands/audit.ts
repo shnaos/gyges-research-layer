@@ -1,4 +1,4 @@
-import type { GrlApiClient, AuditFilters } from '../client/api-client.js';
+import type { GrlApiClient, AuditFilters, AuditEvent, AuditEventsResponse } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { printJson } from '../format/json.js';
 import { printTable } from '../format/table.js';
@@ -13,7 +13,7 @@ export async function runAudit(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listAuditEvents(filters);
+  const result: AuditEventsResponse = await client.listAuditEvents(filters);
 
   if (config.output === 'json') {
     printJson(result);
@@ -27,7 +27,7 @@ export async function runAudit(
       { header: 'SEVERITY', key: 'severity' },
       { header: 'MESSAGE', key: 'message' }
     ],
-    result.events.map((e) => ({
+    result.events.map((e: AuditEvent) => ({
       ...e,
       timestamp: new Date(e.timestamp).toISOString()
     }))

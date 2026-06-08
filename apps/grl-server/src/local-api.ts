@@ -784,7 +784,7 @@ export interface SessionBootstrapConfig {
  * It registers exactly one static compartment (`research`). There is NO dynamic
  * compartment creation surface in this sprint: the manager keeps all state
  * in-memory and performs no persistence, no network, and no browser work. Its
- * sole job is to mint/reuse/rotate session *identities* for the mock transport.
+ * sole job is to mint/reuse/rotate session *identities*.
  */
 export function buildBootstrapSessionManager(
   config: SessionBootstrapConfig,
@@ -1567,6 +1567,18 @@ export interface LocalApiOptions {
   /** Injectable sleep (for deterministic tests). Defaults to a real setTimeout wait. */
   sleep?: (ms: number) => Promise<void>;
   /**
+   * When `true`, the `/v1/capabilities/execute` endpoint is permitted to fall
+   * back to the mock transport when the transport policy resolves to `'mock'`
+   * (the default for all bootstrap rules). When `false` (the default), the
+   * execute endpoint explicitly denies mock-transport requests so callers
+   * receive a real denial rather than simulated output. The
+   * `/v1/capabilities/execute-mock` endpoint is always mock-only regardless of
+   * this flag. Enable only in offline development contexts where no real
+   * transport is configured and you need the full policy pipeline exercised
+   * without network egress.
+   */
+  mockFallbackEnabled?: boolean;
+  /**
    * Capability Graph Engine (Sprint 15). It runs FIRST in the execute-mock
    * pipeline (before the trust gate), modelling capabilities as a graph and
    * evaluating each prospective capability against the compartment's execution
@@ -1858,6 +1870,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     return Number.isFinite(v) ? Math.max(0, Math.floor(v)) : DEFAULT_MAX_EXECUTION_DELAY_MS;
   })();
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const mockFallbackEnabled = options.mockFallbackEnabled ?? false;
   /**
    * Apply the real, bounded execution delay. Returns the number of ms actually
    * awaited (0 when disabled or when the requested delay is non-positive). The
@@ -4780,8 +4793,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     //
     // The routing decision resolves the preferred transport from the policy
     // engine. For the real execute endpoint:
-    //   - 'mock'    → execute with mock transport (always available)
     //   - 'searxng' → check runtime config; denied if disabled or absent
+    //   - 'mock'    → denied by default (explicit error); allowed only when
+    //                 `mockFallbackEnabled` is true (offline dev opt-in)
     //   - other     → fail-closed
     //
     // This is the ONLY place real network transport is activated. The check is
@@ -4815,6 +4829,20 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         if (defenseView !== undefined) response.defense = defenseView;
         return res.status(200).json(response);
       }
+    } else if (resolvedKind === 'mock' && !mockFallbackEnabled) {
+      // Mock transport is not a real transport. Deny explicitly so callers
+      // receive an honest error rather than simulated output.
+      // To opt in: pass mockFallbackEnabled:true (offline dev only).
+      // For dry-run testing: use /v1/capabilities/execute-mock instead.
+      collector.emit({ source: 'transport_policy', action: 'deny', severity: 'warning', reason: 'Mock transport is not a real transport. Configure a real transport or use /v1/capabilities/execute-mock.' });
+      const response: ExecuteCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: 'No real transport configured. Use /v1/capabilities/execute-mock for dry-run testing, or configure SearXNG in your runtime config.',
+        capabilityGraph: capabilityGraphView,
+        routing: toRoutingDecisionView(routingExec)
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
     } else if (resolvedKind !== 'mock') {
       // Unknown transport kind — fail-closed.
       collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.` });
