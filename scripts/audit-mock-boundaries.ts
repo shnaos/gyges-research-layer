@@ -23,8 +23,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
+const ROOT: string = path.resolve(__dirname, '..');
 
 type Check = { ok: boolean; message: string };
 const checks: Check[] = [];
@@ -34,10 +34,10 @@ const fail = (m: string) => checks.push({ ok: false, message: `✗ ${m}` });
 /** Recursively list .ts files under a dir, skipping dist/node_modules/test. */
 function listTs(dir: string): string[] {
   const out: string[] = [];
-  const abs = path.join(ROOT, dir);
+  const abs: string = path.join(ROOT, dir);
   if (!fs.existsSync(abs)) return out;
   for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
-    const rel = path.join(dir, entry.name);
+    const rel: string = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === 'dist' || entry.name === 'node_modules' || entry.name === 'test') continue;
       out.push(...listTs(rel));
@@ -50,18 +50,18 @@ function listTs(dir: string): string[] {
 
 // ─── 1: real fetch in core only inside the SearXNG adapter ───
 
-const FETCH_ALLOWLIST = new Set([
+const FETCH_ALLOWLIST: Set<string> = new Set([
   'packages/core/src/transports/searxng/adapter.ts'
 ]);
 
-const coreFiles = listTs('packages/core/src');
+const coreFiles: string[] = listTs('packages/core/src');
 for (const f of coreFiles) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
   if (/\bfetch\s*\(/.test(src) && !FETCH_ALLOWLIST.has(f)) {
     fail(`unexpected fetch() in core: ${f} (hidden transport — add to allowlist only if intentional)`);
   }
 }
-const searxngAdapter = 'packages/core/src/transports/searxng/adapter.ts';
+const searxngAdapter: string = 'packages/core/src/transports/searxng/adapter.ts';
 if (fs.existsSync(path.join(ROOT, searxngAdapter)) && /\bfetch\s*\(/.test(fs.readFileSync(path.join(ROOT, searxngAdapter), 'utf8'))) {
   pass('the only real fetch() in @gyges/core is the SearXNG adapter (the single real transport)');
 } else {
@@ -70,9 +70,9 @@ if (fs.existsSync(path.join(ROOT, searxngAdapter)) && /\bfetch\s*\(/.test(fs.rea
 
 // ─── 2: network-isolation engine is metadata-only ───
 
-const NI_FILES = listTs('packages/core/src/network-isolation');
-const NET_RE = /\bfetch\s*\(|\bhttps?\.request\s*\(|\bnet\.connect\s*\(|\btls\.connect\s*\(|\bnew\s+WebSocket\b|from\s+['"]node:dns['"]/;
-let niClean = true;
+const NI_FILES: string[] = listTs('packages/core/src/network-isolation');
+const NET_RE: RegExp = /\bfetch\s*\(|\bhttps?\.request\s*\(|\bnet\.connect\s*\(|\btls\.connect\s*\(|\bnew\s+WebSocket\b|from\s+['"]node:dns['"]/;
+let niClean: boolean = true;
 for (const f of NI_FILES) {
   if (NET_RE.test(fs.readFileSync(path.join(ROOT, f), 'utf8'))) {
     fail(`network-isolation must be metadata-only but ${f} contains a network primitive`);
@@ -83,8 +83,8 @@ if (niClean) pass('network-isolation layer is metadata-only (no network primitiv
 
 // ─── 3: no axios/node-fetch/undici in core or server ───
 
-const allSrc = [...listTs('packages/core/src'), ...listTs('apps/grl-server/src')];
-let depClean = true;
+const allSrc: string[] = [...listTs('packages/core/src'), ...listTs('apps/grl-server/src')];
+let depClean: boolean = true;
 for (const f of allSrc) {
   if (/\b(axios|node-fetch|undici)\b/.test(fs.readFileSync(path.join(ROOT, f), 'utf8'))) {
     fail(`forbidden HTTP client referenced in ${f}`);
@@ -98,7 +98,7 @@ if (depClean) pass('no axios/node-fetch/undici in core or server src (only the p
 process.stdout.write('\nGRL Mock Boundary Audit (Sprint 31)\n');
 process.stdout.write('─'.repeat(60) + '\n');
 for (const c of checks) process.stdout.write(`  ${c.message}\n`);
-const failed = checks.filter((c) => !c.ok);
+const failed: Check[] = checks.filter((c) => !c.ok);
 process.stdout.write('─'.repeat(60) + '\n');
 if (failed.length > 0) {
   process.stdout.write(`✗ ${failed.length} mock-boundary invariant(s) violated.\n`);

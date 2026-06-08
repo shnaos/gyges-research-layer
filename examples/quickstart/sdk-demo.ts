@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   }
   console.log('');
 
-  // ── 2. Search (mock transport) ─────────────────────────────────────────────
+  // ── 2. Search (requires SearXNG; denied with explicit reason otherwise) ─────
   console.log('── 2. Search ──');
   console.log('  query: "privacy research"');
   try {
