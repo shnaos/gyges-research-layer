@@ -1,5 +1,13 @@
 # Architecture
 
+> **Two server implementations exist.** This document describes the **legacy
+> pipeline** (Sprint 2 design, port 3000, `npm run start`). The **active
+> pipeline** (port 8787, `npm run dev:server`) is driven by `packages/core`
+> and is described in the README and in [`docs/gateway.md`](gateway.md).
+> All current sprint work targets the active pipeline. The legacy pipeline
+> is preserved for reference; `packages/transport-router` (real SOCKS5) is
+> wired here and will be promoted to the active pipeline in a future sprint.
+
 Gyges Research Layer (GRL) is a local execution layer between AI agents and
 network-facing tools. Sprint 1 proved GRL is a **capability firewall**. Sprint 2
 adds the **identity isolation** and **transport routing** layers, so GRL is a
