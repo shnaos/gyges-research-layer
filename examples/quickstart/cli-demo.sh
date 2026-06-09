@@ -36,8 +36,8 @@ echo "── 1. Health check ──"
 npm run cli -- health
 echo ""
 
-# ── Search (mock transport) ───────────────────────────────────────────────────
-echo "── 2. Search (mock transport, no real network) ──"
+# ── Search (denied at firewall: web_search has no bootstrap allow rule) ───────
+echo "── 2. Search (denied at firewall — requires SearXNG + allow rule to proceed) ──"
 npm run cli -- search "privacy research"
 echo ""
 
