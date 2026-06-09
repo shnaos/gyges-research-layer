@@ -179,6 +179,12 @@ export interface TemporalObfuscationView {
 export interface ExecuteMockCapabilityHttpResponse {
   decision: CapabilityRequestDecision;
   reason: string;
+  /** Sprint 34 — true when the execution result was produced by MockTransportAdapter (no real network). */
+  mocked: boolean;
+  /** Present only when mocked is true. Distinguishes mock output from real transport output at a glance. */
+  transport?: 'mock';
+  /** Present only when mocked is true. Human-readable safety notice. */
+  warning?: string;
   defense?: DefenseDecisionView;
   capabilityGraph?: CapabilityPathDecisionView;
   trust?: TrustView;
@@ -902,7 +908,9 @@ export interface RuntimeReloadHttpResponse {
 // Sprint 17 — Real execution endpoint (POST /v1/capabilities/execute).
 //
 // Differs from execute-mock: uses real transport routing configured at runtime.
-// Falls back to mock when no real transport is configured.
+// Denies (never mocks) when no real transport is configured (Sprint 33+).
+// Sprint 34: mocked field is false on real execute responses; true only on
+// execute-mock responses (or execute with mockFallbackEnabled, dev-only).
 // ---------------------------------------------------------------------------
 
 /**
@@ -916,9 +924,9 @@ export type ExecuteCapabilityHttpRequest = EvaluateCapabilityHttpRequest;
 /**
  * Response body for `POST /v1/capabilities/execute`.
  *
- * Identical shape to {@link ExecuteMockCapabilityHttpResponse} but explicitly
- * named for the real execute endpoint. The `transportKind` field in the
- * execution block will be `"searxng"` when a real transport is used.
+ * Same shape as {@link ExecuteMockCapabilityHttpResponse}. The `mocked` field
+ * is always `false` on this endpoint (real transport only). The `transportKind`
+ * field in the execution block will be `"searxng"` when a real transport is used.
  */
 export type ExecuteCapabilityHttpResponse = ExecuteMockCapabilityHttpResponse;
 

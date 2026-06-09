@@ -241,3 +241,48 @@ describe('transport selection', () => {
     expect(json.execution.transportKind).toBe('mock');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sprint 34 — mock markers: no fake result without explicit marker
+// ---------------------------------------------------------------------------
+
+describe('Sprint 34 mock markers', () => {
+  it('execute-mock allowed response carries mocked:true, transport, warning', async () => {
+    const { base } = await startApp({ mockFallbackEnabled: true });
+    const { json } = await post(base, '/v1/capabilities/execute-mock', BODY);
+    expect(json.decision).toBe('allowed');
+    expect(json.mocked).toBe(true);
+    expect(json.transport).toBe('mock');
+    expect(json.warning).toBe('This is not a real execution');
+  });
+
+  it('execute-mock denied response carries mocked:false', async () => {
+    // local-agent/search is allowed at low risk; high risk has no allow rule → firewall deny.
+    const { base } = await startApp();
+    const { json } = await post(base, '/v1/capabilities/execute-mock', {
+      agentId: 'local-agent',
+      compartmentId: 'research',
+      tool: 'search',
+      riskLevel: 'high',
+      input: 'probe'
+    });
+    expect(json.decision).toBe('denied');
+    expect(json.mocked).toBe(false);
+  });
+
+  it('execute denied response (no real transport) carries mocked:false', async () => {
+    const { base } = await startApp();
+    const { json } = await post(base, '/v1/capabilities/execute', BODY);
+    expect(json.decision).toBe('denied');
+    expect(json.mocked).toBe(false);
+  });
+
+  it('execute allowed via mockFallbackEnabled carries mocked:true, warning', async () => {
+    const { base } = await startApp({ mockFallbackEnabled: true });
+    const { json } = await post(base, '/v1/capabilities/execute', BODY);
+    expect(json.decision).toBe('allowed');
+    expect(json.mocked).toBe(true);
+    expect(json.transport).toBe('mock');
+    expect(json.warning).toBe('This is not a real execution');
+  });
+});

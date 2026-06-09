@@ -3245,6 +3245,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: recorded.reason,
         capabilityGraph: toCapabilityPathDecisionView(recorded)
       };
@@ -3289,6 +3290,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
+        mocked: false,
         reason: recorded.reason,
         capabilityGraph: toCapabilityPathDecisionView(recorded),
         approvalRequestId: created.request.id,
@@ -3350,6 +3352,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (multiAgent.kind === 'deny') {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: multiAgent.reason,
         capabilityGraph: capabilityGraphView
       };
@@ -3376,6 +3379,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
+        mocked: false,
         reason: multiAgent.reason,
         capabilityGraph: capabilityGraphView,
         approvalRequestId: created.request.id,
@@ -3404,6 +3408,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: 'Compartment quarantined.',
         capabilityGraph: capabilityGraphView,
         trust: trustView
@@ -3439,6 +3444,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
+        mocked: false,
         reason: 'Compartment restricted; human approval required.',
         capabilityGraph: capabilityGraphView,
         trust: trustView,
@@ -3472,6 +3478,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (privacyResult.kind === 'deny') {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: privacyResult.reason,
         capabilityGraph: capabilityGraphView,
         trust: trustView
@@ -3547,7 +3554,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         if (retryAfterMs !== undefined) defense.retryAfterMs = retryAfterMs;
         return {
           kind: 'respond',
-          body: { decision: 'denied', reason, capabilityGraph: capabilityGraphView, defense }
+          body: { decision: 'denied', mocked: false, reason, capabilityGraph: capabilityGraphView, defense }
         };
       }
       if (action === 'require_approval') {
@@ -3579,6 +3586,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
           kind: 'respond',
           body: {
             decision: 'pending',
+            mocked: false,
             reason,
             capabilityGraph: capabilityGraphView,
             defense,
@@ -3765,6 +3773,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: decision.reason,
         capabilityGraph: capabilityGraphView
       };
@@ -3806,6 +3815,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
+        mocked: false,
         reason: decision.reason,
         capabilityGraph: capabilityGraphView,
         approvalRequestId: created.request.id,
@@ -3850,6 +3860,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (networkOutcome.kind === 'deny') {
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: networkOutcome.reason,
         capabilityGraph: capabilityGraphView
       };
@@ -3892,6 +3903,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       if (err instanceof TransportPolicyError) {
         const response: ExecuteMockCapabilityHttpResponse = {
           decision: 'denied',
+          mocked: false,
           reason: `No transport routing rule available: ${err.message}`,
           capabilityGraph: capabilityGraphView
         };
@@ -3966,6 +3978,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: 'Privacy boundary blocked execution.',
         capabilityGraph: capabilityGraphView,
         routing: toRoutingDecisionView(routing),
@@ -4003,6 +4016,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
       const response: ExecuteMockCapabilityHttpResponse = {
         decision: 'pending',
+        mocked: false,
         reason: privacy.reason,
         capabilityGraph: capabilityGraphView,
         routing: toRoutingDecisionView(routing),
@@ -4275,6 +4289,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // short-circuit path carry a consistent composite decision.
     const response: ExecuteMockCapabilityHttpResponse = {
       decision: 'allowed',
+      mocked: true,
+      transport: 'mock',
+      warning: 'This is not a real execution',
       reason: decision.reason,
       capabilityGraph: capabilityGraphView,
       routing: toRoutingDecisionView(routing),
@@ -4548,6 +4565,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (privacyResult.kind === 'deny') {
       const response: ExecuteCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: privacyResult.reason,
         capabilityGraph: capabilityGraphView,
         trust: trustView
@@ -4582,7 +4600,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         });
         const defense: DefenseDecisionView = { action, source, reason };
         if (retryAfterMs !== undefined) defense.retryAfterMs = retryAfterMs;
-        return { kind: 'respond', body: { decision: 'denied', reason, capabilityGraph: capabilityGraphView, defense } };
+        return { kind: 'respond', body: { decision: 'denied', mocked: false, reason, capabilityGraph: capabilityGraphView, defense } };
       }
       if (action === 'require_approval') {
         const created = approvalQueue.create({
@@ -4606,7 +4624,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         const defense: DefenseDecisionView = { action, source, reason };
         return {
           kind: 'respond',
-          body: { decision: 'pending', reason, capabilityGraph: capabilityGraphView, defense, approvalRequestId: created.request.id, approvalToken: created.token.value }
+          body: { decision: 'pending', mocked: false, reason, capabilityGraph: capabilityGraphView, defense, approvalRequestId: created.request.id, approvalToken: created.token.value }
         };
       }
       if (action === 'escalate_risk') {
@@ -4703,7 +4721,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
       });
       collector.emit({ source: 'capability_firewall', action: 'deny', severity: 'critical', reason: decisionExec.reason });
-      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: decisionExec.reason, capabilityGraph: capabilityGraphView };
+      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', mocked: false, reason: decisionExec.reason, capabilityGraph: capabilityGraphView };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
@@ -4729,7 +4747,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         metadata: { tool: request.tool, riskLevel: request.riskLevel, reason: decisionExec.reason }
       });
       collector.emit({ source: 'capability_firewall', action: 'require_approval', severity: 'high', reason: decisionExec.reason });
-      const response: ExecuteCapabilityHttpResponse = { decision: 'pending', reason: decisionExec.reason, capabilityGraph: capabilityGraphView, approvalRequestId: created.request.id, approvalToken: created.token.value };
+      const response: ExecuteCapabilityHttpResponse = { decision: 'pending', mocked: false, reason: decisionExec.reason, capabilityGraph: capabilityGraphView, approvalRequestId: created.request.id, approvalToken: created.token.value };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
@@ -4759,6 +4777,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (networkOutcome.kind === 'deny') {
       const response: ExecuteCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: networkOutcome.reason,
         capabilityGraph: capabilityGraphView
       };
@@ -4782,7 +4801,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     } catch (err) {
       if (err instanceof TransportPolicyError) {
         collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: `No transport routing rule available: ${err.message}` });
-        const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: `No transport routing rule available: ${err.message}`, capabilityGraph: capabilityGraphView };
+        const response: ExecuteCapabilityHttpResponse = { decision: 'denied', mocked: false, reason: `No transport routing rule available: ${err.message}`, capabilityGraph: capabilityGraphView };
         if (defenseView !== undefined) response.defense = defenseView;
         return res.status(200).json(response);
       }
@@ -4809,6 +4828,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'SearXNG transport disabled.' });
         const response: ExecuteCapabilityHttpResponse = {
           decision: 'denied',
+          mocked: false,
           reason: 'SearXNG transport disabled.',
           capabilityGraph: capabilityGraphView,
           routing: toRoutingDecisionView(routingExec)
@@ -4822,6 +4842,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'SearXNG transport unavailable (engine not initialised).' });
         const response: ExecuteCapabilityHttpResponse = {
           decision: 'denied',
+          mocked: false,
           reason: 'SearXNG transport unavailable (engine not initialised).',
           capabilityGraph: capabilityGraphView,
           routing: toRoutingDecisionView(routingExec)
@@ -4837,6 +4858,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       collector.emit({ source: 'transport_policy', action: 'deny', severity: 'medium', reason: 'Mock transport is not a real transport. Configure a real transport or use /v1/capabilities/execute-mock.' });
       const response: ExecuteCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: 'No real transport configured. Use /v1/capabilities/execute-mock for dry-run testing, or configure SearXNG in your runtime config.',
         capabilityGraph: capabilityGraphView,
         routing: toRoutingDecisionView(routingExec)
@@ -4848,6 +4870,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.` });
       const response: ExecuteCapabilityHttpResponse = {
         decision: 'denied',
+        mocked: false,
         reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.`,
         capabilityGraph: capabilityGraphView,
         routing: toRoutingDecisionView(routingExec)
@@ -4889,7 +4912,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
       });
       collector.emit({ source: 'privacy_boundary', action: 'deny', severity: 'critical', reason: privacyExec.reason });
-      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: 'Privacy boundary blocked execution.', capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec };
+      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', mocked: false, reason: 'Privacy boundary blocked execution.', capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
@@ -4915,7 +4938,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         metadata: { tool: request.tool, riskLevel: request.riskLevel, privacySignals: privacyExec.signals, reason: privacyExec.reason }
       });
       collector.emit({ source: 'privacy_boundary', action: 'require_approval', severity: 'high', reason: privacyExec.reason });
-      const response: ExecuteCapabilityHttpResponse = { decision: 'pending', reason: privacyExec.reason, capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec, approvalRequestId: created.request.id, approvalToken: created.token.value };
+      const response: ExecuteCapabilityHttpResponse = { decision: 'pending', mocked: false, reason: privacyExec.reason, capabilityGraph: capabilityGraphView, routing: toRoutingDecisionView(routingExec), privacyBoundary: privacyViewExec, approvalRequestId: created.request.id, approvalToken: created.token.value };
       if (defenseView !== undefined) response.defense = defenseView;
       return res.status(200).json(response);
     }
@@ -5097,8 +5120,11 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     if (resultExec.output !== undefined) executionViewExec.output = resultExec.output;
     if (resultExec.error !== undefined) executionViewExec.error = resultExec.error;
 
+    const isMockedExecution = resolvedKind === 'mock';
     const response: ExecuteCapabilityHttpResponse = {
       decision: 'allowed',
+      mocked: isMockedExecution,
+      ...(isMockedExecution ? { transport: 'mock' as const, warning: 'This is not a real execution' } : {}),
       reason: decisionExec.reason,
       capabilityGraph: capabilityGraphView,
       routing: toRoutingDecisionView(routingExec),
