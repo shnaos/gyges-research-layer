@@ -199,6 +199,17 @@ export interface ExecuteMockCapabilityHttpResponse {
   networkIsolation?: NetworkIsolationDecisionView;
   /** Sprint 32 — the REAL execution delay (ms) actually awaited (0 when disabled). */
   appliedDelayMs?: number;
+  /**
+   * Sprint 37 — explicit transport classification.
+   *
+   * `true`  = request was executed through a real transport (e.g. SearXNG).
+   * `false` = request was handled by the mock transport (execute-mock path only).
+   * Absent on denied/pending responses — no execution occurred.
+   *
+   * Consumers must NOT infer this from `execution.transportKind` alone; use this
+   * field as the canonical `isReal` signal.
+   */
+  isReal?: boolean;
 }
 
 /** Trust level band a compartment falls into (Sprint 14). */
