@@ -12,12 +12,23 @@
  */
 
 import { AddressInfo } from 'node:net';
+import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  DEFAULT_RUNTIME_CONFIG,
+  type RuntimeConfig,
+  type RuntimeConfigSnapshot,
+  type RuntimeConfigEvent,
+  type TransportPolicyRule
+} from '../../../packages/core/src/index.js';
+import { deepClone, createSnapshot } from '../../../packages/core/src/runtime-config/snapshot.js';
+import type { RuntimeConfigLoader } from '../../../packages/core/src/runtime-config/loader.js';
+import { TransportPolicyEngine } from '../../../packages/core/src/transport-policy/engine.js';
 import {
   buildBootstrapFirewall,
   buildMockExecutionEngine,
@@ -37,6 +48,49 @@ async function startApp(): Promise<{ base: string }> {
   const app: express.Express = createLocalApiApp({
     firewall: buildBootstrapFirewall(),
     executionEngine: buildMockExecutionEngine()
+  }) as express.Express;
+  const server = app.listen(0, DEFAULT_HOST);
+  await new Promise<void>((r) => server.once('listening', r));
+  const address = server.address() as AddressInfo;
+  cleanups.push(() => server.close());
+  return { base: `http://${DEFAULT_HOST}:${address.port}` };
+}
+
+async function startMockSearXng(): Promise<string> {
+  const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ query: 'probe', results: [{ title: 'T', url: 'https://example.com', content: 'C' }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  cleanups.push(() => server.close());
+  return `http://127.0.0.1:${port}`;
+}
+
+function makeStubLoader(snapshot: RuntimeConfigSnapshot): RuntimeConfigLoader {
+  const listeners: Array<(e: RuntimeConfigEvent) => void> = [];
+  return {
+    getSnapshot: () => snapshot, loadFromFile: () => snapshot, reload: () => snapshot,
+    getPath: () => undefined, validate: (c: unknown) => c as RuntimeConfig,
+    clear: () => {}, watch: () => {}, stopWatching: () => {},
+    addEventListener: (l: (e: RuntimeConfigEvent) => void) => { listeners.push(l); },
+    removeEventListener: (l: (e: RuntimeConfigEvent) => void) => {
+      const i = listeners.indexOf(l); if (i !== -1) listeners.splice(i, 1);
+    }
+  } as unknown as RuntimeConfigLoader;
+}
+
+async function startAppWithSearXng(): Promise<{ base: string }> {
+  const searxngBaseUrl = await startMockSearXng();
+  const cfg: RuntimeConfig = { ...deepClone(DEFAULT_RUNTIME_CONFIG), transports: { searxng: { baseUrl: searxngBaseUrl, timeoutMs: 2000, maxResults: 5, enabled: true } } };
+  const snapshot = createSnapshot(cfg, Date.now());
+  const transportPolicyEngine = new TransportPolicyEngine();
+  for (const rule of cfg.transportPolicies as TransportPolicyRule[]) transportPolicyEngine.registerRule(rule);
+  const app: express.Express = createLocalApiApp({
+    firewall: buildBootstrapFirewall(),
+    executionEngine: buildMockExecutionEngine(),
+    transportPolicyEngine,
+    runtimeConfigLoader: makeStubLoader(snapshot)
   }) as express.Express;
   const server = app.listen(0, DEFAULT_HOST);
   await new Promise<void>((r) => server.once('listening', r));
@@ -96,7 +150,7 @@ describe('active runtime has no hidden transport', () => {
 describe('execute pipeline reality', () => {
   // Sprint 29 guarantee: the SHARED gate sources appear on BOTH endpoints.
   it('shared gate sources are present on both execute and execute-mock', async () => {
-    const { base } = await startApp();
+    const { base } = await startAppWithSearXng();
     const mock = await post(base, '/v1/capabilities/execute-mock', ALLOW_BODY);
     const real = await post(base, '/v1/capabilities/execute', ALLOW_BODY);
     const realSet = new Set(sources(real.json));

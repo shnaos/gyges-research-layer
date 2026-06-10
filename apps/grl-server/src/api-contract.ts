@@ -583,7 +583,11 @@ export type SecurityEventTypeView =
   | 'relay_route_assigned'
   | 'relay_route_rotated'
   | 'network_isolation_enforced'
-  | 'network_isolation_denied';
+  | 'network_isolation_denied'
+  | 'no_real_transport_available'
+  | 'mock_transport_blocked'
+  | 'invalid_runtime_configuration'
+  | 'transport_runtime_failure';
 
 /**
  * Public, secret-free view of a recorded security event.
@@ -899,10 +903,12 @@ export interface RuntimeReloadHttpResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Sprint 17 — Real execution endpoint (POST /v1/capabilities/execute).
+// POST /v1/capabilities/execute — real transport execution endpoint.
 //
-// Differs from execute-mock: uses real transport routing configured at runtime.
-// Falls back to mock when no real transport is configured.
+// Uses real transport routing configured at runtime. Fails closed when no
+// real transport is configured — never falls back to mock. If no real
+// transport is available the response is decision: 'denied' with reason
+// NO_REAL_TRANSPORT_AVAILABLE.
 // ---------------------------------------------------------------------------
 
 /**
@@ -918,7 +924,8 @@ export type ExecuteCapabilityHttpRequest = EvaluateCapabilityHttpRequest;
  *
  * Identical shape to {@link ExecuteMockCapabilityHttpResponse} but explicitly
  * named for the real execute endpoint. The `transportKind` field in the
- * execution block will be `"searxng"` when a real transport is used.
+ * execution block will reflect the real transport used (e.g. `"searxng"`).
+ * This endpoint never returns a mock execution result.
  */
 export type ExecuteCapabilityHttpResponse = ExecuteMockCapabilityHttpResponse;
 

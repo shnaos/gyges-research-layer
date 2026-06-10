@@ -107,8 +107,15 @@ export interface ExecutionResult {
  * An adapter declares the {@link TransportKind} it serves and executes a
  * request, returning an {@link ExecutionResult}. Adapters must treat the
  * incoming request as immutable.
+ *
+ * `isReal` is a mandatory integrity flag: `true` for adapters that perform
+ * actual network I/O; `false` for in-process stubs (mock, test). The execute
+ * endpoint rejects adapters where `isReal === false` to prevent silent
+ * simulation from being returned as a real result.
  */
 export interface TransportAdapter {
   kind: TransportKind;
+  /** `true` for adapters that perform real network I/O; `false` for mock/test stubs. */
+  isReal: boolean;
   execute(request: ExecutionRequest): Promise<ExecutionResult>;
 }

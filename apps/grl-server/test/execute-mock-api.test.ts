@@ -177,3 +177,48 @@ describe('GRL Local API — execute-mock (validation & routing)', () => {
     expect(res.status).toBe(405);
   });
 });
+
+// ---------------------------------------------------------------------------
+// H-01: execute-mock guard — blocked outside test/mock-enabled environments
+// ---------------------------------------------------------------------------
+
+describe('H-01: execute-mock endpoint guard', () => {
+  it('returns 403 MOCK_TRANSPORT_BLOCKED when NODE_ENV is not test and ENABLE_RUNTIME_MOCKS is unset', async () => {
+    const origNodeEnv = process.env['NODE_ENV'];
+    const origEnableMocks = process.env['ENABLE_RUNTIME_MOCKS'];
+    process.env['NODE_ENV'] = 'production';
+    delete process.env['ENABLE_RUNTIME_MOCKS'];
+    try {
+      const { base } = await startApp();
+      const res = await executeMock(base, ALLOW_BODY);
+      expect(res.status).toBe(403);
+      expect(res.json.decision).toBe('denied');
+      expect(res.json.reason).toContain('MOCK_TRANSPORT_BLOCKED');
+    } finally {
+      process.env['NODE_ENV'] = origNodeEnv;
+      if (origEnableMocks !== undefined) {
+        process.env['ENABLE_RUNTIME_MOCKS'] = origEnableMocks;
+      }
+    }
+  });
+
+  it('allows execute-mock when ENABLE_RUNTIME_MOCKS=true even when NODE_ENV is not test', async () => {
+    const origNodeEnv = process.env['NODE_ENV'];
+    const origEnableMocks = process.env['ENABLE_RUNTIME_MOCKS'];
+    process.env['NODE_ENV'] = 'production';
+    process.env['ENABLE_RUNTIME_MOCKS'] = 'true';
+    try {
+      const { base } = await startApp();
+      const res = await executeMock(base, ALLOW_BODY);
+      expect(res.status).toBe(200);
+      expect(['allowed', 'pending_approval']).toContain(res.json.decision);
+    } finally {
+      process.env['NODE_ENV'] = origNodeEnv;
+      if (origEnableMocks !== undefined) {
+        process.env['ENABLE_RUNTIME_MOCKS'] = origEnableMocks;
+      } else {
+        delete process.env['ENABLE_RUNTIME_MOCKS'];
+      }
+    }
+  });
+});

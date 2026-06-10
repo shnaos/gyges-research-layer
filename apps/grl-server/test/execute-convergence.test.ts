@@ -5,16 +5,27 @@
  * metadata): the behavioral/persona/temporal gates run, the temporal delay is
  * actually awaited (bounded, opt-in), and persona/route changes really rotate the
  * session and fingerprint.
+ *
+ * Sprint integrity update: execute now requires a real configured transport.
+ * Tests that need execution to complete (temporal delay, session rotation) use a
+ * local in-process mock SearXNG HTTP server so the transport check passes.
+ * Tests that verify pre-routing gate effects (behavioral, persona) still work
+ * without SearXNG because those gates run before transport selection.
  */
 
-import { AddressInfo } from 'node:net';
+import { AddressInfo, createServer, IncomingMessage, ServerResponse } from 'node:http';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   TemporalObfuscationEngine,
   NetworkIsolationEngine,
-  BehavioralPrivacyEngine
+  BehavioralPrivacyEngine,
+  DEFAULT_RUNTIME_CONFIG
 } from '../../../packages/core/src/index.js';
+import { deepClone, createSnapshot } from '../../../packages/core/src/runtime-config/snapshot.js';
+import { RuntimeConfigLoader } from '../../../packages/core/src/runtime-config/loader.js';
+import { RuntimeConfig, RuntimeConfigSnapshot, RuntimeConfigEvent, TransportPolicyRule } from '../../../packages/core/src/index.js';
+import { TransportPolicyEngine } from '../../../packages/core/src/transport-policy/engine.js';
 import {
   buildBootstrapFirewall,
   buildMockExecutionEngine,
@@ -27,10 +38,99 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()?.();
 });
 
+// ---------------------------------------------------------------------------
+// Minimal mock SearXNG server
+// ---------------------------------------------------------------------------
+
+interface MockSearXngServer {
+  baseUrl: string;
+  close: () => Promise<void>;
+}
+
+async function startMockSearXng(): Promise<MockSearXngServer> {
+  const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ query: 'convergence probe', results: [{ title: 'T', url: 'https://example.com', content: 'C' }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  cleanups.push(() => server.close());
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+  };
+}
+
+function makeStubLoader(snapshot: RuntimeConfigSnapshot): RuntimeConfigLoader {
+  const listeners: Array<(event: RuntimeConfigEvent) => void> = [];
+  return {
+    getSnapshot: () => snapshot,
+    loadFromFile: () => snapshot,
+    reload: () => snapshot,
+    getPath: () => undefined,
+    validate: (cfg: unknown) => cfg as RuntimeConfig,
+    clear: () => {},
+    watch: () => {},
+    stopWatching: () => {},
+    addEventListener: (listener: (event: RuntimeConfigEvent) => void) => { listeners.push(listener); },
+    removeEventListener: (listener: (event: RuntimeConfigEvent) => void) => {
+      const i = listeners.indexOf(listener);
+      if (i !== -1) listeners.splice(i, 1);
+    }
+  } as unknown as RuntimeConfigLoader;
+}
+
+function makeSearXngConfig(searxngBaseUrl: string): RuntimeConfig {
+  const base = deepClone(DEFAULT_RUNTIME_CONFIG);
+  const searxngRule: TransportPolicyRule = {
+    tool: 'search',
+    riskLevel: 'low',
+    preferredTransport: 'searxng',
+    isolationPolicy: { level: 'session', forceRotateOnHighRisk: true, forbidSessionReuse: false, allowCrossToolReuse: true }
+  };
+  const filteredPolicies = base.transportPolicies.filter(
+    (r: TransportPolicyRule) => !(r.tool === 'search' && r.riskLevel === 'low')
+  );
+  return {
+    ...base,
+    transportPolicies: [searxngRule, ...filteredPolicies],
+    transports: { searxng: { baseUrl: searxngBaseUrl, timeoutMs: 2000, maxResults: 5, enabled: true } }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// App helpers
+// ---------------------------------------------------------------------------
+
 async function startApp(opts: Record<string, unknown> = {}): Promise<{ base: string }> {
   const app: express.Express = createLocalApiApp({
     firewall: buildBootstrapFirewall(),
     executionEngine: buildMockExecutionEngine(),
+    ...opts
+  }) as express.Express;
+  const server = app.listen(0, DEFAULT_HOST);
+  await new Promise<void>((r) => server.once('listening', r));
+  const address = server.address() as AddressInfo;
+  cleanups.push(() => server.close());
+  return { base: `http://${DEFAULT_HOST}:${address.port}` };
+}
+
+/** Start an app wired with a real (in-process mock) SearXNG transport. */
+async function startAppWithSearXng(
+  searxngBaseUrl: string,
+  opts: Record<string, unknown> = {}
+): Promise<{ base: string }> {
+  const cfg = makeSearXngConfig(searxngBaseUrl);
+  const snapshot = createSnapshot(cfg, Date.now());
+  const fakeLoader = makeStubLoader(snapshot);
+  const transportPolicyEngine = new TransportPolicyEngine();
+  for (const rule of cfg.transportPolicies) transportPolicyEngine.registerRule(rule);
+
+  const app: express.Express = createLocalApiApp({
+    firewall: buildBootstrapFirewall(),
+    executionEngine: buildMockExecutionEngine(),
+    transportPolicyEngine,
+    runtimeConfigLoader: fakeLoader,
     ...opts
   }) as express.Express;
   const server = app.listen(0, DEFAULT_HOST);
@@ -52,14 +152,13 @@ function get(base: string, p: string) {
 }
 
 const BODY = {
-  agentId: 'local-agent', // the bootstrap firewall only allows local-agent/research
+  agentId: 'local-agent',
   compartmentId: 'research',
   tool: 'search',
   riskLevel: 'low',
   input: 'convergence probe'
 };
 
-/** A temporal engine that recommends a delay as soon as two requests are close. */
 function delayingTemporalEngine(): TemporalObfuscationEngine {
   return new TemporalObfuscationEngine({
     now: Date.now,
@@ -69,6 +168,7 @@ function delayingTemporalEngine(): TemporalObfuscationEngine {
 
 // ---------------------------------------------------------------------------
 // Gate convergence: behavioral/persona/temporal really run on execute
+// (privacy pipeline runs before routing — signals appear even in denied responses)
 // ---------------------------------------------------------------------------
 
 describe('privacy gates run on the real execute path', () => {
@@ -84,8 +184,6 @@ describe('privacy gates run on the real execute path', () => {
   it('really mutates persona/behavioral state on execute (audit-observable)', async () => {
     const { base } = await startApp();
     await post(base, '/v1/capabilities/execute', BODY);
-    // persona_created and a fragment event are emitted only by the engines
-    // actually running — not by metadata.
     const personaEvents = await get(base, '/v1/audit/events?type=persona_created');
     expect(personaEvents.json.events.length).toBeGreaterThan(0);
     const fragmentEvents = await get(base, '/v1/audit/events?type=behavior_fragment_created');
@@ -93,62 +191,80 @@ describe('privacy gates run on the real execute path', () => {
   });
 });
 
-  it('behavioral critical correlation now DENIES on the real execute path', async () => {
-    // Seed a behavioral engine to critical correlation risk (mirrors the
-    // behavioral-privacy-api oracle, but asserts the NEW deny branch on execute).
-    let current = 1000;
-    const engine = new BehavioralPrivacyEngine({ now: () => current });
-    for (let i = 0; i < 16; i++) {
-      engine.evaluateRequest({ agentId: 'local-agent' });
-      engine.recordBehavior({ agentId: 'local-agent' });
-      current += 1000;
-    }
-    const { base } = await startApp({ behavioralPrivacyEngine: engine });
-    const { json } = await post(base, '/v1/capabilities/execute', BODY);
-    expect(json.decision).toBe('denied');
-    expect(json.reason).toBe('critical_correlation_risk');
-    // The composite decision reflects the real deny (not just metadata).
-    expect(json.runtimePolicy.allowed).toBe(false);
-  });
+it('behavioral critical correlation now DENIES on the real execute path', async () => {
+  let current = 1000;
+  const engine = new BehavioralPrivacyEngine({ now: () => current });
+  for (let i = 0; i < 16; i++) {
+    engine.evaluateRequest({ agentId: 'local-agent' });
+    engine.recordBehavior({ agentId: 'local-agent' });
+    current += 1000;
+  }
+  const { base } = await startApp({ behavioralPrivacyEngine: engine });
+  const { json } = await post(base, '/v1/capabilities/execute', BODY);
+  expect(json.decision).toBe('denied');
+  expect(json.reason).toBe('critical_correlation_risk');
+  expect(json.runtimePolicy.allowed).toBe(false);
+});
 
 // ---------------------------------------------------------------------------
-// Real (not advisory) delay
+// execute fails closed when no real transport is configured
+// ---------------------------------------------------------------------------
+
+describe('transport integrity', () => {
+  it('denies with NO_REAL_TRANSPORT_AVAILABLE when no real transport is configured', async () => {
+    const { base } = await startApp();
+    const { json } = await post(base, '/v1/capabilities/execute', BODY);
+    expect(json.decision).toBe('denied');
+    expect(json.reason).toContain('NO_REAL_TRANSPORT_AVAILABLE');
+    expect(json.execution).toBeUndefined();
+  });
+
+  it('succeeds with real SearXNG transport configured', async () => {
+    const searxng = await startMockSearXng();
+    const { base } = await startAppWithSearXng(searxng.baseUrl);
+    const { json } = await post(base, '/v1/capabilities/execute', BODY);
+    expect(json.decision).toBe('allowed');
+    expect(json.execution.transportKind).toBe('searxng');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real (not advisory) delay — requires SearXNG to reach applyExecutionDelay
 // ---------------------------------------------------------------------------
 
 describe('temporal delay is a real, bounded, opt-in effect', () => {
   it('is OFF by default — no sleep, appliedDelayMs 0 even when a delay is computed', async () => {
     const slept: number[] = [];
-    const { base } = await startApp({
+    const searxng = await startMockSearXng();
+    const { base } = await startAppWithSearXng(searxng.baseUrl, {
       temporalObfuscationEngine: delayingTemporalEngine(),
       sleep: async (ms: number) => { slept.push(ms); }
     });
-    await post(base, '/v1/capabilities/execute', BODY); // primes cadence
-    const second = await post(base, '/v1/capabilities/execute', BODY); // would-be delayed
-    expect(slept).toEqual([]); // sleep never invoked when disabled
+    await post(base, '/v1/capabilities/execute', BODY);
+    const second = await post(base, '/v1/capabilities/execute', BODY);
+    expect(slept).toEqual([]);
     expect(second.json.appliedDelayMs).toBe(0);
   });
 
   it('when enabled, the computed delay is actually awaited (spy), deterministic and capped', async () => {
     const slept: number[] = [];
-    const { base } = await startApp({
+    const searxng = await startMockSearXng();
+    const { base } = await startAppWithSearXng(searxng.baseUrl, {
       temporalObfuscationEngine: delayingTemporalEngine(),
       executionDelayEnabled: true,
       maxExecutionDelayMs: 250,
       sleep: async (ms: number) => { slept.push(ms); }
     });
-    await post(base, '/v1/capabilities/execute', BODY); // request 1: primes cadence
-    const second = await post(base, '/v1/capabilities/execute', BODY); // request 2: within minSpacing → delay
-    // Sleep was really invoked with a positive, capped duration.
+    await post(base, '/v1/capabilities/execute', BODY);
+    const second = await post(base, '/v1/capabilities/execute', BODY);
     const positive = slept.filter((ms) => ms > 0);
     expect(positive.length).toBeGreaterThan(0);
     for (const ms of slept) expect(ms).toBeLessThanOrEqual(250);
-    // The response reports the REAL awaited duration (not a metadata recommendation).
     expect(second.json.appliedDelayMs).toBeGreaterThan(0);
     expect(second.json.appliedDelayMs).toBeLessThanOrEqual(250);
   });
 
   it('the computed delay is deterministic (no uncontrolled randomness)', () => {
-    // Same fixed clock + same primed sequence → identical delay, twice.
     const run = (): number => {
       const e = new TemporalObfuscationEngine({
         now: () => 10_000,
@@ -159,22 +275,21 @@ describe('temporal delay is a real, bounded, opt-in effect', () => {
       return e.evaluateTemporalRisk('a').delayMs;
     };
     const first = run();
-    expect(run()).toBe(first); // deterministic
+    expect(run()).toBe(first);
   });
 
   it('really waits on the wall clock (one real-timing test, small cap)', async () => {
-    const { base } = await startApp({
+    const searxng = await startMockSearXng();
+    const { base } = await startAppWithSearXng(searxng.baseUrl, {
       temporalObfuscationEngine: delayingTemporalEngine(),
       executionDelayEnabled: true,
       maxExecutionDelayMs: 40
-      // real sleep (default)
     });
     await post(base, '/v1/capabilities/execute', BODY);
     const start = Date.now();
     const second = await post(base, '/v1/capabilities/execute', BODY);
     const elapsed = Date.now() - start;
     expect(second.json.appliedDelayMs).toBeGreaterThan(0);
-    // Allow scheduler slack but require an observable real wait.
     expect(elapsed).toBeGreaterThanOrEqual(second.json.appliedDelayMs - 5);
   });
 });
@@ -191,43 +306,22 @@ describe('persona / route changes produce real rotations on execute', () => {
         rotateOnCriticalRisk: false, maxAssignmentsPerRoute: 1
       }
     });
-    const { base } = await startApp({ networkIsolationEngine });
-    await post(base, '/v1/capabilities/execute', BODY); // assigns route + session
-    const second = await post(base, '/v1/capabilities/execute', BODY); // route rotates → session rotates
+    const searxng = await startMockSearXng();
+    const { base } = await startAppWithSearXng(searxng.baseUrl, { networkIsolationEngine });
+    await post(base, '/v1/capabilities/execute', BODY);
+    const second = await post(base, '/v1/capabilities/execute', BODY);
     expect(second.json.networkIsolation.shouldRotate).toBe(true);
-    const rotations = await get(
-      base,
-      '/v1/audit/events?type=session_rotated&compartmentId=research'
-    );
+    const rotations = await get(base, '/v1/audit/events?type=session_rotated&compartmentId=research');
     expect(rotations.json.events.length).toBeGreaterThan(0);
   });
 
   it('a category change rotates the route AND the fingerprint on execute', async () => {
-    const { base } = await startApp();
-    const a = await post(base, '/v1/capabilities/execute', {
-      ...BODY,
-      input: { query: 'q', categoryHint: 'crypto' }
-    });
-    const b = await post(base, '/v1/capabilities/execute', {
-      ...BODY,
-      input: { query: 'q2', categoryHint: 'health' }
-    });
+    const searxng = await startMockSearXng();
+    const { base } = await startAppWithSearXng(searxng.baseUrl);
+    const a = await post(base, '/v1/capabilities/execute', { ...BODY, input: { query: 'q', categoryHint: 'crypto' } });
+    const b = await post(base, '/v1/capabilities/execute', { ...BODY, input: { query: 'q2', categoryHint: 'health' } });
     expect(a.json.networkIsolation.shouldRotate).toBe(false);
     expect(b.json.networkIsolation.shouldRotate).toBe(true);
-    // Route rotation is wired into the fingerprint (route → fingerprint linkage).
     expect(b.json.fingerprint.rotated).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Transport selection: mock is a real fallback, not a parallel pipeline
-// ---------------------------------------------------------------------------
-
-describe('transport selection', () => {
-  it('execute uses the mock transport as fallback when SearXNG is disabled', async () => {
-    const { base } = await startApp();
-    const { json } = await post(base, '/v1/capabilities/execute', BODY);
-    expect(json.decision).toBe('allowed');
-    expect(json.execution.transportKind).toBe('mock');
   });
 });

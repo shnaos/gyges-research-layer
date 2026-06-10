@@ -1,9 +1,13 @@
 /**
- * Bootstrap transport policy rules for the MVP.
+ * Bootstrap transport policy rules.
  *
- * These are the deterministic rules the local server starts with. They are pure
- * metadata: no secrets, no real transport configuration. Only the `mock`
- * transport is referenced — Sprint 8 performs no real network I/O.
+ * Both rules name `searxng` as the preferred transport — the only real
+ * transport GRL ships. When SearXNG is not configured the execute endpoint
+ * fails closed (denied) rather than falling back to mock.
+ *
+ * These rules are intentionally NOT compatible with the mock transport.
+ * The execute-mock endpoint bypasses transport-kind enforcement and always
+ * runs the MockTransportAdapter directly.
  */
 
 import { TransportPolicyRule } from './types.js';
@@ -11,13 +15,12 @@ import { TransportPolicyRule } from './types.js';
 /**
  * Rule 1 — low-risk `search`.
  *
- * Session-scoped isolation, reuse permitted, high-risk requests would rotate.
- * A low-risk `search` therefore reuses its session (`reuse_allowed`).
+ * Routes to SearXNG. Session-scoped isolation, reuse permitted.
  */
 export const BOOTSTRAP_SEARCH_RULE: TransportPolicyRule = {
   tool: 'search',
   riskLevel: 'low',
-  preferredTransport: 'mock',
+  preferredTransport: 'searxng',
   isolationPolicy: {
     level: 'session',
     forceRotateOnHighRisk: true,
@@ -29,13 +32,12 @@ export const BOOTSTRAP_SEARCH_RULE: TransportPolicyRule = {
 /**
  * Rule 2 — medium-risk `fetch_html`.
  *
- * Strict isolation with reuse forbidden: every routed execution forces a fresh
- * session (`forced_rotation`) and is reported at `strict` isolation level.
+ * Routes to SearXNG. Strict isolation, reuse forbidden.
  */
 export const BOOTSTRAP_FETCH_HTML_RULE: TransportPolicyRule = {
   tool: 'fetch_html',
   riskLevel: 'medium',
-  preferredTransport: 'mock',
+  preferredTransport: 'searxng',
   isolationPolicy: {
     level: 'strict',
     forceRotateOnHighRisk: true,

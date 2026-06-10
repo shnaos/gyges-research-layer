@@ -36,6 +36,7 @@ export interface MockTransportAdapterOptions {
  */
 export class MockTransportAdapter implements TransportAdapter {
   readonly kind: TransportKind = 'mock';
+  readonly isReal: boolean = false;
 
   private readonly now: () => number;
   private readonly generateId: () => string;

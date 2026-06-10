@@ -13,12 +13,21 @@
  */
 
 import { AddressInfo } from 'node:net';
+import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   RuntimePolicyOrchestrator,
-  AgentRegistry
+  AgentRegistry,
+  DEFAULT_RUNTIME_CONFIG,
+  type RuntimeConfig,
+  type RuntimeConfigSnapshot,
+  type RuntimeConfigEvent,
+  type TransportPolicyRule
 } from '../../../packages/core/src/index.js';
+import { deepClone, createSnapshot } from '../../../packages/core/src/runtime-config/snapshot.js';
+import type { RuntimeConfigLoader } from '../../../packages/core/src/runtime-config/loader.js';
+import { TransportPolicyEngine } from '../../../packages/core/src/transport-policy/engine.js';
 import {
   buildBootstrapFirewall,
   buildMockExecutionEngine,
@@ -52,6 +61,52 @@ async function startApp(
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const address = server.address() as AddressInfo;
   cleanups.push(() => server.close());
+  return { base: `http://${DEFAULT_HOST}:${address.port}`, orchestrator, registry };
+}
+
+function makeStubLoader(snapshot: RuntimeConfigSnapshot): RuntimeConfigLoader {
+  const listeners: Array<(e: RuntimeConfigEvent) => void> = [];
+  return {
+    getSnapshot: () => snapshot, loadFromFile: () => snapshot, reload: () => snapshot,
+    getPath: () => undefined, validate: (c: unknown) => c as RuntimeConfig,
+    clear: () => {}, watch: () => {}, stopWatching: () => {},
+    addEventListener: (l: (e: RuntimeConfigEvent) => void) => { listeners.push(l); },
+    removeEventListener: (l: (e: RuntimeConfigEvent) => void) => {
+      const i = listeners.indexOf(l); if (i !== -1) listeners.splice(i, 1);
+    }
+  } as unknown as RuntimeConfigLoader;
+}
+
+async function startAppWithSearXng(
+  opts: { orchestrator?: RuntimePolicyOrchestrator; registry?: AgentRegistry } = {}
+): Promise<StartedServer> {
+  const orchestrator = opts.orchestrator ?? new RuntimePolicyOrchestrator();
+  const registry = opts.registry ?? new AgentRegistry();
+  const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ query: 'probe', results: [{ title: 'T', url: 'https://example.com', content: 'C' }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  cleanups.push(() => server.close());
+  const searxngBaseUrl = `http://127.0.0.1:${port}`;
+  const cfg: RuntimeConfig = { ...deepClone(DEFAULT_RUNTIME_CONFIG), transports: { searxng: { baseUrl: searxngBaseUrl, timeoutMs: 2000, maxResults: 5, enabled: true } } };
+  const snapshot = createSnapshot(cfg, Date.now());
+  const transportPolicyEngine = new TransportPolicyEngine();
+  for (const rule of cfg.transportPolicies as TransportPolicyRule[]) transportPolicyEngine.registerRule(rule);
+  // Omit executionEngine so createLocalApiApp builds the default mock engine with a transport
+  // registry, ensuring execute-mock also emits the `sandbox` signal for gate-parity assertions.
+  const app: express.Express = createLocalApiApp({
+    firewall: buildBootstrapFirewall(),
+    transportPolicyEngine,
+    runtimeConfigLoader: makeStubLoader(snapshot),
+    runtimePolicyOrchestrator: orchestrator,
+    agentRegistry: registry
+  }) as express.Express;
+  const srv = app.listen(0, DEFAULT_HOST);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const address = srv.address() as AddressInfo;
+  cleanups.push(() => srv.close());
   return { base: `http://${DEFAULT_HOST}:${address.port}`, orchestrator, registry };
 }
 
@@ -95,7 +150,7 @@ const sources = (json: any): string[] =>
 
 describe('execute / execute-mock runtimePolicy parity', () => {
   it('execute allowed response includes a runtimePolicy block', async () => {
-    const { base } = await startApp();
+    const { base } = await startAppWithSearXng();
     const { status, json } = await post(base, '/v1/capabilities/execute', ALLOW_BODY);
     expect(status).toBe(200);
     expect(json.decision).toBe('allowed');
@@ -122,7 +177,7 @@ describe('execute / execute-mock runtimePolicy parity', () => {
   });
 
   it('execute and execute-mock share their common signal sources on the allowed path', async () => {
-    const { base } = await startApp();
+    const { base } = await startAppWithSearXng();
     const mock = await post(base, '/v1/capabilities/execute-mock', ALLOW_BODY);
     const real = await post(base, '/v1/capabilities/execute', ALLOW_BODY);
 

@@ -12,12 +12,21 @@
  */
 
 import { AddressInfo } from 'node:net';
+import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   NetworkIsolationEngine,
-  CompartmentTrustEngine
+  CompartmentTrustEngine,
+  DEFAULT_RUNTIME_CONFIG,
+  type RuntimeConfig,
+  type RuntimeConfigSnapshot,
+  type RuntimeConfigEvent,
+  type TransportPolicyRule
 } from '../../../packages/core/src/index.js';
+import { deepClone, createSnapshot } from '../../../packages/core/src/runtime-config/snapshot.js';
+import type { RuntimeConfigLoader } from '../../../packages/core/src/runtime-config/loader.js';
+import { TransportPolicyEngine } from '../../../packages/core/src/transport-policy/engine.js';
 import {
   buildBootstrapFirewall,
   buildMockExecutionEngine,
@@ -46,6 +55,49 @@ async function startApp(
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const address = server.address() as AddressInfo;
   cleanups.push(() => server.close());
+  return { base: `http://${DEFAULT_HOST}:${address.port}` };
+}
+
+function makeStubLoader(snapshot: RuntimeConfigSnapshot): RuntimeConfigLoader {
+  const listeners: Array<(e: RuntimeConfigEvent) => void> = [];
+  return {
+    getSnapshot: () => snapshot, loadFromFile: () => snapshot, reload: () => snapshot,
+    getPath: () => undefined, validate: (c: unknown) => c as RuntimeConfig,
+    clear: () => {}, watch: () => {}, stopWatching: () => {},
+    addEventListener: (l: (e: RuntimeConfigEvent) => void) => { listeners.push(l); },
+    removeEventListener: (l: (e: RuntimeConfigEvent) => void) => {
+      const i = listeners.indexOf(l); if (i !== -1) listeners.splice(i, 1);
+    }
+  } as unknown as RuntimeConfigLoader;
+}
+
+async function startAppWithSearXng(
+  opts: { networkIsolationEngine?: NetworkIsolationEngine; trustEngine?: CompartmentTrustEngine } = {}
+): Promise<{ base: string }> {
+  const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ query: 'probe', results: [{ title: 'T', url: 'https://example.com', content: 'C' }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  cleanups.push(() => server.close());
+  const searxngBaseUrl = `http://127.0.0.1:${port}`;
+  const cfg: RuntimeConfig = { ...deepClone(DEFAULT_RUNTIME_CONFIG), transports: { searxng: { baseUrl: searxngBaseUrl, timeoutMs: 2000, maxResults: 5, enabled: true } } };
+  const snapshot = createSnapshot(cfg, Date.now());
+  const transportPolicyEngine = new TransportPolicyEngine();
+  for (const rule of cfg.transportPolicies as TransportPolicyRule[]) transportPolicyEngine.registerRule(rule);
+  const app: express.Express = createLocalApiApp({
+    firewall: buildBootstrapFirewall(),
+    executionEngine: buildMockExecutionEngine(),
+    transportPolicyEngine,
+    runtimeConfigLoader: makeStubLoader(snapshot),
+    ...(opts.networkIsolationEngine ? { networkIsolationEngine: opts.networkIsolationEngine } : {}),
+    ...(opts.trustEngine ? { trustEngine: opts.trustEngine } : {})
+  }) as express.Express;
+  const srv = app.listen(0, DEFAULT_HOST);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const address = srv.address() as AddressInfo;
+  cleanups.push(() => srv.close());
   return { base: `http://${DEFAULT_HOST}:${address.port}` };
 }
 
@@ -94,7 +146,7 @@ function quarantinedTrustEngine(): CompartmentTrustEngine {
 
 describe('execute networkIsolation block', () => {
   it('execute allowed response includes a networkIsolation block', async () => {
-    const { base } = await startApp();
+    const { base } = await startAppWithSearXng();
     const { status, json } = await post(base, '/v1/capabilities/execute', ALLOW_BODY);
     expect(status).toBe(200);
     expect(json.decision).toBe('allowed');

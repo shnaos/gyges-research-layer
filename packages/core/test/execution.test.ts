@@ -109,6 +109,7 @@ describe('ExecutionEngine', () => {
   it('fails cleanly when an adapter throws', async () => {
     const throwing: TransportAdapter = {
       kind: 'mock',
+      isReal: false,
       async execute() {
         throw new Error('boom');
       }

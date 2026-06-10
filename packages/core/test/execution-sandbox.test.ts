@@ -114,6 +114,7 @@ describe('ExecutionEngine — sandbox gate', () => {
   it('keeps a thrown adapter as failed even with the sandbox wired (allow)', async () => {
     const throwing: TransportAdapter = {
       kind: 'mock',
+      isReal: false,
       async execute() {
         throw new Error('boom');
       }
