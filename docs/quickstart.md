@@ -69,7 +69,31 @@ Profile: balanced
 npm run cli -- search "privacy"
 ```
 
-The search goes through the full GRL pipeline (capability graph → trust → firewall → privacy boundary → session → sandbox → mock execution → audit). With the default profile, the mock transport returns a placeholder response — no real web request is made.
+On a fresh runtime this returns:
+
+```
+decision   denied
+reason     Denied by default policy.
+```
+
+That is **deny-by-default working as designed**: the CLI submits its request as
+`agentId: grl-cli` / `tool: web_search`, and the bootstrap firewall ships an
+explicit allow rule only for `agentId: local-agent` / `tool: search`. Nothing
+reaches execution unless a policy rule permits it.
+
+To see an **allowed** end-to-end flow (decision → mock execution → audit), use
+the bootstrap-allowed combination directly:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/v1/capabilities/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"agentId":"local-agent","compartmentId":"research","tool":"search","riskLevel":"low","input":"privacy"}'
+```
+
+It returns `decision: allowed`, runs the mock transport (no real web request),
+and records the full audit trail. See [`demo.md`](demo.md) for the annotated
+walkthrough. To allow the CLI itself, add a matching `firewallPolicies` rule for
+`grl-cli` / `web_search` in your runtime config.
 
 ---
 

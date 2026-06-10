@@ -1,4 +1,4 @@
-import type { GrlApiClient, PolicySignalFilters } from '../client/api-client.js';
+import type { CompositeRuntimeDecisionView, GrlApiClient, PolicyOrchestratorLastDecisionResponse, PolicyOrchestratorPoliciesResponse, PolicyOrchestratorSignalsResponse, PolicySignalFilters, RuntimeProfileResponse, RuntimeProfilesResponse, RuntimeProfileSwitchResponse, RuntimeProfileView, RuntimeReloadResponse, RuntimeVersionResponse } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { CliError } from '../errors.js';
 import { printJson } from '../format/json.js';
@@ -15,7 +15,7 @@ export async function runRuntimeVersion(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.runtimeVersion();
+  const result :RuntimeVersionResponse = await client.runtimeVersion();
 
   if (config.output === 'json') {
     printJson(result);
@@ -29,7 +29,7 @@ export async function runRuntimeReload(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.runtimeReload();
+  const result :RuntimeReloadResponse = await client.runtimeReload();
 
   if (config.output === 'json') {
     printJson(result);
@@ -47,7 +47,7 @@ export async function runRuntimeProfiles(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listRuntimeProfiles();
+  const result :RuntimeProfilesResponse = await client.listRuntimeProfiles();
 
   if (config.output === 'json') {
     printJson(result);
@@ -71,14 +71,14 @@ export async function runRuntimeProfile(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.getActiveProfile();
+  const result :RuntimeProfileResponse = await client.getActiveProfile();
 
   if (config.output === 'json') {
     printJson(result);
     return;
   }
 
-  const profile = result.profile;
+  const profile :RuntimeProfileView= result.profile;
   const rows: [string, unknown][] = [
     ['name', profile.name],
     ['enabled', profile.enabled],
@@ -98,7 +98,7 @@ export async function runRuntimeProfileSwitch(
     throw new CliError('command_failed', 'Profile name is required.');
   }
 
-  const result = await client.switchProfile(name.trim());
+  const result :RuntimeProfileSwitchResponse = await client.switchProfile(name.trim());
 
   if (config.output === 'json') {
     printJson(result);
@@ -141,7 +141,7 @@ export async function runRuntimePolicy(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listPolicyOrchestratorPolicies();
+  const result: PolicyOrchestratorPoliciesResponse = await client.listPolicyOrchestratorPolicies();
 
   if (config.output === 'json') {
     printJson(result);
@@ -166,7 +166,7 @@ export async function runRuntimePolicySignals(
   config: GrlCliConfig,
   filters: PolicySignalFilters = {}
 ): Promise<void> {
-  const result = await client.listPolicyOrchestratorSignals(filters);
+  const result: PolicyOrchestratorSignalsResponse = await client.listPolicyOrchestratorSignals(filters);
 
   if (config.output === 'json') {
     printJson(result);
@@ -195,7 +195,7 @@ export async function runRuntimePolicyLastDecision(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.getLastPolicyOrchestratorDecision();
+  const result: PolicyOrchestratorLastDecisionResponse = await client.getLastPolicyOrchestratorDecision();
 
   if (config.output === 'json') {
     printJson(result);
@@ -207,7 +207,7 @@ export async function runRuntimePolicyLastDecision(
     return;
   }
 
-  const d = result.decision;
+  const d : CompositeRuntimeDecisionView = result.decision;
   printKeyValue([
     ['action', d.action],
     ['allowed', d.allowed],

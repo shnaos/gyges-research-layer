@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js';
+import type { GrlApiClient, Incident, IncidentsResponse } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { printJson } from '../format/json.js';
 import { printTable } from '../format/table.js';
@@ -12,7 +12,7 @@ export async function runIncidents(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listIncidents();
+  const result: IncidentsResponse = await client.listIncidents();
 
   if (config.output === 'json') {
     printJson(result);
@@ -27,7 +27,7 @@ export async function runIncidents(
       { header: 'CREATED_AT', key: 'createdAt' },
       { header: 'SUMMARY', key: 'summary' }
     ],
-    result.incidents.map((i) => ({
+    result.incidents.map((i: Incident) => ({
       ...i,
       createdAt: new Date(i.createdAt).toISOString()
     }))

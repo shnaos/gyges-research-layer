@@ -1,6 +1,15 @@
 # gyges-research-layer
 
-Local-first capability firewall and identity compartmentalization gateway for AI agents performing private web research.
+**GRL is a local-first security, privacy and capability gateway for AI agents.**
+It sits between any AI agent and the capabilities it requests — network access,
+tool execution, web search — and enforces a deny-by-default, fail-closed policy
+pipeline before any request is executed.
+
+GRL is not an orchestrator. It does not generate responses or manage
+conversations. It is a defensive execution layer: agents express what they
+want to do; GRL decides whether, how, and with what privacy guarantees it
+is allowed. See [`docs/gateway.md`](docs/gateway.md) for the full gateway
+architecture and future integration modes.
 
 ## Installation
 
@@ -23,14 +32,29 @@ npm run dev:server
 # In another terminal — check health
 npm run cli -- health
 
-# Run a search
+# Run a search — returns `denied` on a fresh runtime (deny-by-default);
+# see docs/quickstart.md step 5 for the bootstrap-allowed flow.
 npm run cli -- search "privacy"
 
 # Run all validations
 npm run smoke-test
 ```
 
-See [`docs/quickstart.md`](docs/quickstart.md) for the 5-minute guide.
+See [`docs/quickstart.md`](docs/quickstart.md) for the 5-minute guide and
+[`docs/demo.md`](docs/demo.md) for a guided `input → decision → execution → audit`
+walkthrough with real runtime output.
+
+## Developer Preview
+
+- **Landing site** — a minimal, dependency-free site in [`site/`](site/) (open
+  `site/index.html`, or `python3 -m http.server -d site 8088`).
+- **Concept docs** — [`docs/capability-firewall.md`](docs/capability-firewall.md),
+  [`docs/compartments.md`](docs/compartments.md),
+  [`docs/policy-engine.md`](docs/policy-engine.md),
+  [`docs/transports.md`](docs/transports.md).
+- **Honest scope** — by default GRL runs a mock transport (no real network); the
+  only real transport is an opt-in, loopback-only SearXNG adapter. GRL is a
+  privacy layer, not an anonymity network. See [`docs/audits/`](docs/audits/).
 
 ## Package Layout
 
@@ -40,12 +64,17 @@ packages/
   agent-sdk/             @gyges/agent-sdk      — agent client SDK
   policy-engine/         @gyges/policy-engine  — policy engine (legacy)
   identity-compartment/  @gyges/identity-compartment
-  transport-router/      @gyges/transport-router
+  transport-router/      @gyges/transport-router  — real SOCKS5 (direct/tor/proxy); used by legacy pipeline
   search-adapter-searxng/ @gyges/search-adapter-searxng
 apps/
-  grl-server/            grl-server           — local API server (127.0.0.1:8787)
+  grl-server/            grl-server           — local API server (127.0.0.1:8787, active pipeline)
+  grl-proxy/             @gyges/grl-proxy     — gateway adapter layer (type contracts; no runtime yet)
   grl-cli/               @gyges/grl-cli       — CLI operator interface
 ```
+
+> **Two server modes:** `npm run dev:server` starts the active pipeline (port 8787).
+> `npm run start` starts the legacy pipeline (port 3000). All current work targets
+> port 8787. See [`docs/gateway.md`](docs/gateway.md) for architecture details.
 
 See [`docs/packaging.md`](docs/packaging.md) for the full packaging reference.
 
@@ -180,14 +209,19 @@ AI agents doing web research can leak identity, intent, query correlation, and b
 
 ## GRL is NOT
 
-- a browser
-- a crawler
-- a proxy chain
-- a Tor replacement
-- an anonymous VPN
+- an AI assistant, LLM, or conversation manager
+- a closed orchestrator
+- a replacement for Claude Code, Aider, OpenCode, Hermes, or Cursor
+- a browser or browser automation framework
+- a crawler or web scraper
+- a fake OpenAI API that generates completions
+- a proxy chain or multi-hop anonymizer
+- a Tor replacement or anonymous VPN
 - a guarantee of anonymity or perfect OPSEC
+- MCP-dependent (MCP is one optional adapter among others)
 
-GRL is a **privacy layer**, not an anonymity system. See [Security Model](#security-model) and [Non-Goals](#non-goals) below.
+GRL is a **privacy and capability firewall**, not an anonymity system.
+See [Security Model](#security-model) and [Non-Goals](#non-goals) below.
 
 ## Architecture
 
@@ -216,6 +250,8 @@ Audit / Incidents          (packages/core — append-only audit trail, incident 
 ```
 
 Server entry point: `apps/grl-server` exposes `POST /v1/capabilities/execute` and `POST /v1/capabilities/execute-mock`.
+
+For the gateway architecture (Proxy Mode, Tool Gateway, CLI wrapper, OpenAI-compatible planning, compatibility matrix), see [`docs/gateway.md`](docs/gateway.md).
 
 ## Security Model
 
@@ -409,6 +445,14 @@ if (isPending(result)) console.log('Approval required:', result.approvalRequestI
 ```
 
 See [`docs/agent-sdk.md`](docs/agent-sdk.md) for the full reference.
+
+### Concepts
+
+- [`docs/capability-firewall.md`](docs/capability-firewall.md) — the deny-by-default authorization gate
+- [`docs/compartments.md`](docs/compartments.md) — identity isolation units
+- [`docs/policy-engine.md`](docs/policy-engine.md) — policy data model (active core vs legacy YAML)
+- [`docs/transports.md`](docs/transports.md) — policy-decided transport (mock default, opt-in loopback SearXNG)
+- [`docs/demo.md`](docs/demo.md) — guided execution-flow demonstration
 
 ### Architecture
 

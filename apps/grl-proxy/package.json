@@ -1,0 +1,24 @@
+{
+  "name": "@gyges/grl-proxy",
+  "version": "0.0.1",
+  "private": true,
+  "description": "GRL Proxy — gateway adapter layer (type contracts; no runtime implementation)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  }
+}

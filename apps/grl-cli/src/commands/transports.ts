@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js';
+import type { GrlApiClient, TransportManifest, TransportsResponse } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { printJson } from '../format/json.js';
 import { printTable } from '../format/table.js';
@@ -12,7 +12,7 @@ export async function runTransports(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listTransports();
+  const result :TransportsResponse = await client.listTransports();
 
   if (config.output === 'json') {
     printJson(result);
@@ -28,7 +28,7 @@ export async function runTransports(
       { header: 'BROWSER', key: 'browserAccess' },
       { header: 'PERMISSIONS', key: 'permissions' }
     ],
-    result.transports.map((t) => ({
+    result.transports.map((t: TransportManifest) => ({
       ...t,
       permissions: t.declaredPermissions.join(',')
     }))

@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js';
+import type { GrlApiClient, TrustProfile, TrustProfileResponse, TrustProfilesResponse } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { CliError } from '../errors.js';
 import { printJson } from '../format/json.js';
@@ -16,7 +16,7 @@ export async function runTrust(
   config: GrlCliConfig
 ): Promise<void> {
   if (compartmentId) {
-    const result = await client.getTrustProfile(compartmentId).catch((err: unknown) => {
+    const result :TrustProfileResponse = await client.getTrustProfile(compartmentId).catch((err: unknown) => {
       if (err instanceof CliError && err.code === 'command_failed') {
         throw new CliError('command_failed', `Trust profile not found: ${compartmentId}`);
       }
@@ -28,7 +28,7 @@ export async function runTrust(
       return;
     }
 
-    const p = result.profile;
+    const p: TrustProfile = result.profile;
     printKeyValue([
       ['compartment', p.compartmentId],
       ['score', p.score],
@@ -36,7 +36,7 @@ export async function runTrust(
       ['updatedAt', new Date(p.updatedAt).toISOString()]
     ]);
   } else {
-    const result = await client.listTrustProfiles();
+    const result :TrustProfilesResponse = await client.listTrustProfiles();
 
     if (config.output === 'json') {
       printJson(result);
@@ -50,7 +50,7 @@ export async function runTrust(
         { header: 'LEVEL', key: 'level' },
         { header: 'UPDATED_AT', key: 'updatedAt' }
       ],
-      result.profiles.map((p) => ({
+      result.profiles.map((p: TrustProfile) => ({
         ...p,
         updatedAt: new Date(p.updatedAt).toISOString()
       }))

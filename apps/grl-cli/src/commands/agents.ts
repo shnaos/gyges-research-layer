@@ -1,4 +1,4 @@
-import type { GrlApiClient } from '../client/api-client.js';
+import type { AgentActionResponse, AgentLeasesResponse, AgentLeaseView, AgentResponse, AgentRuntimeView, AgentsResponse, GrlApiClient } from '../client/api-client.js';
 import type { GrlCliConfig } from '../config/cli-config.js';
 import { CliError } from '../errors.js';
 import { printJson } from '../format/json.js';
@@ -13,7 +13,7 @@ export async function runAgentsList(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.listAgents();
+  const result: AgentsResponse = await client.listAgents();
 
   if (config.output === 'json') {
     printJson(result);
@@ -29,7 +29,7 @@ export async function runAgentsList(
       { header: 'EXECUTIONS', key: 'activeExecutions' },
       { header: 'UPDATED_AT', key: 'updatedAt' }
     ],
-    result.agents.map((a) => ({
+    result.agents.map((a: AgentRuntimeView) => ({
       ...a,
       updatedAt: new Date(a.updatedAt).toISOString()
     }))
@@ -46,7 +46,7 @@ export async function runAgentGet(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.getAgent(agentId).catch((err: unknown) => {
+  const result: AgentResponse = await client.getAgent(agentId).catch((err: unknown) => {
     if (err instanceof CliError && err.code === 'command_failed') {
       throw new CliError('command_failed', `Agent not found: ${agentId}`);
     }
@@ -82,7 +82,7 @@ export async function runAgentLeases(
   config: GrlCliConfig
 ): Promise<void> {
   if (agentId) {
-    const result = await client.listAgentLeases(agentId).catch((err: unknown) => {
+    const result: AgentLeasesResponse = await client.listAgentLeases(agentId).catch((err: unknown) => {
       if (err instanceof CliError && err.code === 'command_failed') {
         throw new CliError('command_failed', `Agent not found: ${agentId}`);
       }
@@ -107,7 +107,7 @@ export async function runAgentLeases(
         { header: 'EXPIRES_AT', key: 'expiresAt' },
         { header: 'RENEWABLE', key: 'renewable' }
       ],
-      result.leases.map((l) => ({
+      result.leases.map((l: AgentLeaseView) => ({
         ...l,
         acquiredAt: new Date(l.acquiredAt).toISOString(),
         expiresAt: new Date(l.expiresAt).toISOString()
@@ -115,11 +115,11 @@ export async function runAgentLeases(
     );
   } else {
     // Without an agentId, list all agents and show a lease summary.
-    const agentsResult = await client.listAgents();
-    const leased = agentsResult.agents.filter((a) => a.lease !== undefined);
+    const agentsResult: AgentsResponse = await client.listAgents();
+    const leased: AgentRuntimeView[] = agentsResult.agents.filter((a) => a.lease !== undefined);
 
     if (config.output === 'json') {
-      printJson({ leases: leased.map((a) => a.lease) });
+      printJson({ leases: leased.map((a: AgentRuntimeView) => a.lease) });
       return;
     }
 
@@ -135,7 +135,7 @@ export async function runAgentLeases(
         { header: 'ACQUIRED_AT', key: 'acquiredAt' },
         { header: 'EXPIRES_AT', key: 'expiresAt' }
       ],
-      leased.map((a) => ({
+      leased.map((a: AgentRuntimeView) => ({
         id: a.lease!.id,
         holderAgentId: a.lease!.holderAgentId,
         acquiredAt: new Date(a.lease!.acquiredAt).toISOString(),
@@ -155,7 +155,7 @@ export async function runAgentEvict(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.evictAgent(agentId).catch((err: unknown) => {
+  const result: AgentActionResponse = await client.evictAgent(agentId).catch((err: unknown) => {
     if (err instanceof CliError && err.code === 'command_failed') {
       throw new CliError('command_failed', `Agent not found or cannot be evicted: ${agentId}`);
     }
@@ -184,7 +184,7 @@ export async function runAgentRestrict(
   client: GrlApiClient,
   config: GrlCliConfig
 ): Promise<void> {
-  const result = await client.restrictAgent(agentId).catch((err: unknown) => {
+  const result: AgentActionResponse = await client.restrictAgent(agentId).catch((err: unknown) => {
     if (err instanceof CliError && err.code === 'command_failed') {
       throw new CliError('command_failed', `Agent not found or cannot be restricted: ${agentId}`);
     }
