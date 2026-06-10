@@ -176,7 +176,7 @@ describe('GRL Local API — GET /v1/transport-policies', () => {
     expect(search).toEqual({
       tool: 'search',
       riskLevel: BOOTSTRAP_SEARCH_RULE.riskLevel,
-      preferredTransport: 'mock',
+      preferredTransport: 'searxng',
       isolationPolicy: BOOTSTRAP_SEARCH_RULE.isolationPolicy
     });
 
@@ -184,7 +184,7 @@ describe('GRL Local API — GET /v1/transport-policies', () => {
     expect(fetchHtml).toEqual({
       tool: 'fetch_html',
       riskLevel: BOOTSTRAP_FETCH_HTML_RULE.riskLevel,
-      preferredTransport: 'mock',
+      preferredTransport: 'searxng',
       isolationPolicy: BOOTSTRAP_FETCH_HTML_RULE.isolationPolicy
     });
   });
@@ -212,12 +212,12 @@ describe('GRL Local API — execute-mock routing', () => {
     expect(res.status).toBe(200);
     expect(res.json.decision).toBe('allowed');
     expect(res.json.routing).toEqual({
-      transportKind: 'mock',
+      transportKind: 'searxng',
       shouldRotateSession: false,
       isolationLevel: 'session',
       reason: 'reuse_allowed'
     });
-    // transportKind is injected from the routing decision (mock only).
+    // routing resolves to 'searxng'; execution always runs via the mock adapter.
     expect(res.json.execution.transportKind).toBe('mock');
   });
 
@@ -244,7 +244,7 @@ describe('GRL Local API — execute-mock routing', () => {
     expect(first.status).toBe(200);
     expect(first.json.decision).toBe('allowed');
     expect(first.json.routing).toEqual({
-      transportKind: 'mock',
+      transportKind: 'searxng',
       shouldRotateSession: true,
       isolationLevel: 'strict',
       reason: 'forced_rotation'

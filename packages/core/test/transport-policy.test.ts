@@ -213,7 +213,7 @@ describe('TransportPolicyEngine — bootstrap rules', () => {
 
     const searchDecision = engine.resolve(request({ tool: 'search', riskLevel: 'low' }));
     expect(searchDecision).toEqual({
-      transportKind: 'mock',
+      transportKind: 'searxng',
       shouldRotateSession: false,
       isolationLevel: 'session',
       reason: 'reuse_allowed'
@@ -223,7 +223,7 @@ describe('TransportPolicyEngine — bootstrap rules', () => {
       request({ tool: 'fetch_html', riskLevel: 'medium' })
     );
     expect(fetchDecision).toEqual({
-      transportKind: 'mock',
+      transportKind: 'searxng',
       shouldRotateSession: true,
       isolationLevel: 'strict',
       reason: 'forced_rotation'

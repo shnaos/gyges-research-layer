@@ -183,8 +183,8 @@ async function startApp(overrides: Parameters<typeof createLocalApiApp>[0]): Pro
 // Tests: execute with default (mock) config
 // ---------------------------------------------------------------------------
 
-describe('POST /v1/capabilities/execute — default mock config', () => {
-  it('executes with mock transport when no searxng config is present', async () => {
+describe('POST /v1/capabilities/execute — no real transport configured', () => {
+  it('returns denied (NO_REAL_TRANSPORT_AVAILABLE) when no real transport is configured', async () => {
     const base = await startApp({
       firewall: buildBootstrapFirewall(),
       approvalQueue: buildApprovalQueue(),
@@ -192,9 +192,9 @@ describe('POST /v1/capabilities/execute — default mock config', () => {
     });
     const res = await execute(base, ALLOW_BODY);
     expect(res.status).toBe(200);
-    expect(res.json.decision).toBe('allowed');
-    expect(res.json.execution.status).toBe('success');
-    expect(res.json.execution.transportKind).toBe('mock');
+    expect(res.json.decision).toBe('denied');
+    expect(res.json.reason).toContain('NO_REAL_TRANSPORT_AVAILABLE');
+    expect(res.json.execution).toBeUndefined();
   });
 
   it('returns 400 when Content-Type is not application/json', async () => {

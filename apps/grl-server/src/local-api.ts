@@ -723,7 +723,11 @@ export const VALID_SECURITY_EVENT_TYPES: readonly SecurityEventType[] = [
   'relay_route_assigned',
   'relay_route_rotated',
   'network_isolation_enforced',
-  'network_isolation_denied'
+  'network_isolation_denied',
+  'no_real_transport_available',
+  'mock_transport_blocked',
+  'invalid_runtime_configuration',
+  'transport_runtime_failure'
 ];
 
 /** Every valid {@link EventSeverity}, used to validate audit query params. */
@@ -1915,16 +1919,16 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     buildCapabilityGraphEngineFromConfig(activeSnapshot.config);
 
   /**
-   * Sprint 17 — real execution engine for POST /v1/capabilities/execute.
+   * Real execution engine for POST /v1/capabilities/execute.
    *
    * Built from the active runtime config's `transports.searxng` section. If
    * SearXNG is enabled, this is a SearXNG-only engine with SEARXNG_SANDBOX_POLICY.
    * If SearXNG is absent or disabled, `realSearXngEngine` is `null` and the
-   * execute endpoint falls back to the mock engine.
+   * execute endpoint returns `denied` (NO_REAL_TRANSPORT_AVAILABLE). There is
+   * no mock fallback on the real execute path.
    *
    * Rebuilt on every config reload. Invalid configs are logged and ignored
-   * (the previous engine is preserved — fail-safe for the searxng engine, since
-   * the mock fallback is always available).
+   * (the previous engine is preserved — fail-safe for the SearXNG engine).
    */
   let realSearXngEngine: ExecutionEngine | null = (() => {
     try {
@@ -3140,11 +3144,28 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       .json({ error: 'Method not allowed. Use POST /v1/capabilities/request.' });
   });
 
-  // Experimental Sprint 6 endpoint: evaluate, then — only when allowed without
-  // confirmation — execute through the MOCK transport. This endpoint is
-  // mock-only: it performs no fetch, DNS, socket, browser, or any real network
-  // egress. A deny never executes; a pending never executes.
+  // Mock-only execution endpoint: runs through the full policy pipeline then
+  // executes via the in-process MockTransportAdapter.
+  // GUARD: only accessible when NODE_ENV=test or ENABLE_RUNTIME_MOCKS=true.
+  // In all other environments this endpoint is disabled and returns a structured
+  // denial with audit event MOCK_TRANSPORT_BLOCKED.
   app.post('/v1/capabilities/execute-mock', async (req, res) => {
+    const mockEnabled =
+      process.env['NODE_ENV'] === 'test' ||
+      process.env['ENABLE_RUNTIME_MOCKS'] === 'true';
+    if (!mockEnabled) {
+      securityEventEngine.emit({
+        type: 'mock_transport_blocked',
+        severity: 'warning',
+        message: 'execute-mock endpoint blocked: mock transport is disabled in this environment. Set NODE_ENV=test or ENABLE_RUNTIME_MOCKS=true to enable.',
+        metadata: { endpoint: '/v1/capabilities/execute-mock' }
+      });
+      return res.status(403).json({
+        decision: 'denied',
+        reason: 'MOCK_TRANSPORT_BLOCKED: The execute-mock endpoint is disabled. Set NODE_ENV=test or ENABLE_RUNTIME_MOCKS=true to enable it.'
+      });
+    }
+
     if (!req.is('application/json')) {
       return res
         .status(400)
@@ -4077,8 +4098,10 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       });
     }
 
-    // Inject the transport from the RoutingDecision into the execution context
-    // so the Execution Engine routes through exactly the resolved transport.
+    // The execute-mock endpoint always runs via the MockTransportAdapter —
+    // transport kind is hardcoded to 'mock' so the engine can locate the adapter.
+    // The routing decision's transportKind still appears in the response's
+    // `routing` block and reflects real-path routing (now 'searxng').
     const executionRequest: ExecutionRequest = {
       id: randomUUID(),
       agentId: request.agentId,
@@ -4090,7 +4113,7 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       transportHeaders: { ...fingerprintState.profile.assignedHeaders },
       session: {
         ...sessionManager.toSessionContext(session),
-        transportKind: routing.transportKind
+        transportKind: 'mock'
       }
     };
 
@@ -4776,26 +4799,23 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       throw err;
     }
 
-    // Sprint 17 — determine the effective transport.
+    // Determine the effective transport.
     //
-    // The routing decision resolves the preferred transport from the policy
-    // engine. For the real execute endpoint:
-    //   - 'mock'    → execute with mock transport (always available)
+    // The execute endpoint only permits real transports. Mock transport is
+    // explicitly rejected — it must never be used as a fallback here.
     //   - 'searxng' → check runtime config; denied if disabled or absent
-    //   - other     → fail-closed
-    //
-    // This is the ONLY place real network transport is activated. The check is
-    // dual: the transport policy must have routed to searxng AND the runtime
-    // config must explicitly enable it.
+    //   - 'mock'    → denied: NO_REAL_TRANSPORT_AVAILABLE (audit event emitted)
+    //   - other     → fail-closed (unsupported)
     const resolvedKind = routingExec.transportKind;
 
     if (resolvedKind === 'searxng') {
       const searxngCfg = activeSnapshot.config.transports?.searxng;
       if (!searxngCfg || !searxngCfg.enabled) {
         collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'SearXNG transport disabled.' });
+        observeSecurity({ type: 'no_real_transport_available', severity: 'warning', agentId: request.agentId, compartmentId: request.compartmentId, requestId, message: 'SearXNG transport disabled — no real transport available.', metadata: { tool: request.tool, resolvedKind } });
         const response: ExecuteCapabilityHttpResponse = {
           decision: 'denied',
-          reason: 'SearXNG transport disabled.',
+          reason: 'NO_REAL_TRANSPORT_AVAILABLE: SearXNG transport is disabled. Configure and enable a real transport to use this endpoint.',
           capabilityGraph: capabilityGraphView,
           routing: toRoutingDecisionView(routingExec)
         };
@@ -4806,16 +4826,30 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
       if (!realSearXngEngine) {
         // Config may have changed since reload; fail-closed.
         collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'SearXNG transport unavailable (engine not initialised).' });
+        observeSecurity({ type: 'transport_runtime_failure', severity: 'critical', agentId: request.agentId, compartmentId: request.compartmentId, requestId, message: 'SearXNG engine not initialised despite config being enabled.', metadata: { tool: request.tool, resolvedKind } });
         const response: ExecuteCapabilityHttpResponse = {
           decision: 'denied',
-          reason: 'SearXNG transport unavailable (engine not initialised).',
+          reason: 'TRANSPORT_RUNTIME_FAILURE: SearXNG transport unavailable (engine not initialised).',
           capabilityGraph: capabilityGraphView,
           routing: toRoutingDecisionView(routingExec)
         };
         if (defenseView !== undefined) response.defense = defenseView;
         return res.status(200).json(response);
       }
-    } else if (resolvedKind !== 'mock') {
+    } else if (resolvedKind === 'mock') {
+      // Mock transport is never permitted on the real execute endpoint.
+      // Use POST /v1/capabilities/execute-mock for mock/test execution.
+      collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'NO_REAL_TRANSPORT_AVAILABLE: mock transport is not permitted on this endpoint.' });
+      observeSecurity({ type: 'no_real_transport_available', severity: 'warning', agentId: request.agentId, compartmentId: request.compartmentId, requestId, message: 'Mock transport resolved — no real transport configured. Denied.', metadata: { tool: request.tool, resolvedKind } });
+      const response: ExecuteCapabilityHttpResponse = {
+        decision: 'denied',
+        reason: 'NO_REAL_TRANSPORT_AVAILABLE: No real transport is configured. Use POST /v1/capabilities/execute-mock for test/mock execution, or configure a real transport (e.g. SearXNG).',
+        capabilityGraph: capabilityGraphView,
+        routing: toRoutingDecisionView(routingExec)
+      };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    } else {
       // Unknown transport kind — fail-closed.
       collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: `Transport kind "${resolvedKind}" is not supported by the execute endpoint.` });
       const response: ExecuteCapabilityHttpResponse = {
@@ -4975,11 +5009,21 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     // execution (no-op when executionDelayEnabled is false, the default).
     const appliedDelayMsExec = await applyExecutionDelay(privacyEffects.delayMs);
 
-    // Select the appropriate execution engine: real (SearXNG) or mock.
-    const activeEngine: ExecutionEngine =
-      resolvedKind === 'searxng' && realSearXngEngine
-        ? realSearXngEngine
-        : executionEngine;
+    // Only real transports reach this point. realSearXngEngine is non-null
+    // (checked above); executionEngine is never used here — mock is denied.
+    const activeEngine: ExecutionEngine = realSearXngEngine!;
+
+    // A-01 integrity guard: reject any adapter whose isReal flag is false.
+    // This is a belt-and-suspenders check — the transport-kind checks above
+    // already ensure only real transports reach here.
+    const activeAdapter = activeEngine['adapters']?.get(resolvedKind) as { isReal?: boolean } | undefined;
+    if (activeAdapter !== undefined && activeAdapter.isReal === false) {
+      collector.emit({ source: 'transport_policy', action: 'deny', severity: 'critical', reason: 'TRANSPORT_RUNTIME_FAILURE: resolved adapter is not a real transport.' });
+      observeSecurity({ type: 'transport_runtime_failure', severity: 'critical', agentId: request.agentId, compartmentId: request.compartmentId, requestId, message: 'Resolved adapter has isReal=false on the execute endpoint — denied.', metadata: { tool: request.tool, resolvedKind } });
+      const response: ExecuteCapabilityHttpResponse = { decision: 'denied', reason: 'TRANSPORT_RUNTIME_FAILURE: resolved adapter is not a real transport.', capabilityGraph: capabilityGraphView };
+      if (defenseView !== undefined) response.defense = defenseView;
+      return res.status(200).json(response);
+    }
 
     const resultExec = await activeEngine.execute(executionRequestExec);
 

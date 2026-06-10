@@ -1,7 +1,18 @@
 import { AddressInfo } from 'node:net'
+import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import express from 'express'
 import { afterEach, describe, expect, it } from 'vitest'
-import { TransportFingerprintEngine } from '../../../packages/core/src/index.js'
+import {
+  TransportFingerprintEngine,
+  DEFAULT_RUNTIME_CONFIG,
+  type RuntimeConfig,
+  type RuntimeConfigSnapshot,
+  type RuntimeConfigEvent,
+  type TransportPolicyRule
+} from '../../../packages/core/src/index.js'
+import { deepClone, createSnapshot } from '../../../packages/core/src/runtime-config/snapshot.js'
+import type { RuntimeConfigLoader } from '../../../packages/core/src/runtime-config/loader.js'
+import { TransportPolicyEngine } from '../../../packages/core/src/transport-policy/engine.js'
 import {
   DEFAULT_HOST,
   buildApprovalQueue,
@@ -41,6 +52,54 @@ async function startApp(
     incidentDetector: buildIncidentDetector(),
     trustEngine: buildCompartmentTrustEngine(),
     transportFingerprintEngine: fingerprintEngine,
+    ...extra
+  })
+  const server = app.listen(0, DEFAULT_HOST)
+  await new Promise<void>((resolve) => server.once('listening', resolve))
+  const address = server.address() as AddressInfo
+  cleanups.push(() => server.close())
+  return { base: `http://${DEFAULT_HOST}:${address.port}`, fingerprintEngine }
+}
+
+function makeStubLoader(snapshot: RuntimeConfigSnapshot): RuntimeConfigLoader {
+  const listeners: Array<(e: RuntimeConfigEvent) => void> = []
+  return {
+    getSnapshot: () => snapshot, loadFromFile: () => snapshot, reload: () => snapshot,
+    getPath: () => undefined, validate: (c: unknown) => c as RuntimeConfig,
+    clear: () => {}, watch: () => {}, stopWatching: () => {},
+    addEventListener: (l: (e: RuntimeConfigEvent) => void) => { listeners.push(l) },
+    removeEventListener: (l: (e: RuntimeConfigEvent) => void) => {
+      const i = listeners.indexOf(l); if (i !== -1) listeners.splice(i, 1)
+    }
+  } as unknown as RuntimeConfigLoader
+}
+
+async function startAppWithSearXng(
+  extra: Partial<LocalApiOptions> = {}
+): Promise<{ base: string; fingerprintEngine: TransportFingerprintEngine }> {
+  const fingerprintEngine = (extra.transportFingerprintEngine as TransportFingerprintEngine | undefined) ?? makeFingerprintEngine()
+  const httpServer = createServer((_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ query: 'probe', results: [{ title: 'T', url: 'https://example.com', content: 'C' }] }))
+  })
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
+  const { port } = httpServer.address() as AddressInfo
+  cleanups.push(() => httpServer.close())
+  const searxngBaseUrl = `http://127.0.0.1:${port}`
+  const cfg: RuntimeConfig = { ...deepClone(DEFAULT_RUNTIME_CONFIG), transports: { searxng: { baseUrl: searxngBaseUrl, timeoutMs: 2000, maxResults: 5, enabled: true } } }
+  const snapshot = createSnapshot(cfg, Date.now())
+  const transportPolicyEngine = new TransportPolicyEngine()
+  for (const rule of cfg.transportPolicies as TransportPolicyRule[]) transportPolicyEngine.registerRule(rule)
+  const app: express.Express = createLocalApiApp({
+    firewall: buildBootstrapFirewall(),
+    approvalQueue: buildApprovalQueue(),
+    securityEventEngine: buildSecurityEventEngine(),
+    heuristicsEngine: buildRuntimeSecurityHeuristicsEngine(),
+    incidentDetector: buildIncidentDetector(),
+    trustEngine: buildCompartmentTrustEngine(),
+    transportFingerprintEngine: fingerprintEngine,
+    transportPolicyEngine,
+    runtimeConfigLoader: makeStubLoader(snapshot),
     ...extra
   })
   const server = app.listen(0, DEFAULT_HOST)
@@ -119,7 +178,7 @@ describe('transport fingerprint API', () => {
   })
 
   it('GET /v1/privacy/fingerprints/:agentId returns profile after execute', async () => {
-    const { base } = await startApp()
+    const { base } = await startAppWithSearXng()
     await execute(base, ALLOW_BODY)
     const { status, json } = await rawRequest(base, '/v1/privacy/fingerprints/local-agent')
     expect(status).toBe(200)

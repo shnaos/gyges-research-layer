@@ -109,7 +109,11 @@ export type SecurityEventType =
   | 'relay_route_assigned'
   | 'relay_route_rotated'
   | 'network_isolation_enforced'
-  | 'network_isolation_denied';
+  | 'network_isolation_denied'
+  | 'no_real_transport_available'
+  | 'mock_transport_blocked'
+  | 'invalid_runtime_configuration'
+  | 'transport_runtime_failure';
 
 /**
  * A single, immutable security event.

@@ -120,6 +120,7 @@ function toSearchRequest(input: unknown): SearXngSearchRequest | null {
  */
 export class SearXngTransportAdapter implements TransportAdapter {
   readonly kind = TRANSPORT_KIND;
+  readonly isReal: boolean = true;
 
   private readonly config: SearXngTransportConfig;
   private readonly now: () => number;
