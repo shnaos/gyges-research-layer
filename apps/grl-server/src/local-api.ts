@@ -78,10 +78,6 @@ import {
   BOOTSTRAP_TRANSPORT_MANIFESTS,
   BOOTSTRAP_TRANSPORT_POLICY_RULES,
   STRICT_SANDBOX_POLICY,
-  SEARXNG_TRANSPORT_MANIFEST,
-  SEARXNG_SANDBOX_POLICY,
-  buildSearXngAdapter,
-  SearXngConfigError,
   RuntimeProfileResolver,
   RuntimeProfileResolutionError,
   RUNTIME_PROFILE_NAMES,
@@ -125,6 +121,28 @@ import {
   PolicyRule,
   YamlPolicyEngine
 } from '../../../packages/policy-engine/src/index.js';
+export {
+  buildFirewallFromConfig,
+  buildTransportPolicyEngineFromConfig,
+  buildPrivacyBoundaryEngineFromConfig,
+  buildRateLimiterFromConfig,
+  buildAdaptiveDefenseEngineFromConfig,
+  buildCapabilityGraphEngineFromConfig,
+  buildSearXngExecutionEngine,
+  buildReloadableDependencies,
+  type ReloadableDependencies,
+} from './runtime-factory.js';
+import {
+  buildFirewallFromConfig,
+  buildTransportPolicyEngineFromConfig,
+  buildPrivacyBoundaryEngineFromConfig,
+  buildRateLimiterFromConfig,
+  buildAdaptiveDefenseEngineFromConfig,
+  buildCapabilityGraphEngineFromConfig,
+  buildSearXngExecutionEngine,
+  buildReloadableDependencies,
+  type ReloadableDependencies,
+} from './runtime-factory.js';
 import {
   ApprovalDecisionHttpResponse,
   AdaptiveDefensePoliciesHttpResponse,
@@ -347,38 +365,7 @@ export function buildMockExecutionEngine(
   });
 }
 
-/**
- * Sprint 17 — Build the real execution engine for the /v1/capabilities/execute
- * endpoint.
- *
- * When the active runtime config has a valid, enabled SearXNG config, the engine
- * is built with a SearXNG adapter and the SEARXNG_SANDBOX_POLICY (which permits
- * network access). When SearXNG is disabled or absent, returns `null` so the
- * caller can fall back to the mock engine.
- *
- * Returns `null` when:
- *   - `config.transports?.searxng` is absent
- *   - `enabled: false`
- *
- * Throws {@link SearXngConfigError} when the config is present but structurally
- * invalid (e.g. non-loopback baseUrl, invalid timeout).
- */
-export function buildSearXngExecutionEngine(
-  config: RuntimeConfig
-): ExecutionEngine | null {
-  const searxngConfig = config.transports?.searxng;
-  const adapter = buildSearXngAdapter(searxngConfig);
-  if (!adapter) return null;
-
-  const registry = new TransportCapabilityRegistry();
-  registry.registerManifest(SEARXNG_TRANSPORT_MANIFEST);
-
-  return new ExecutionEngine({
-    adapters: [adapter],
-    registry,
-    sandboxPolicy: SEARXNG_SANDBOX_POLICY
-  });
-}
+// buildSearXngExecutionEngine moved to runtime-factory.ts (re-exported above)
 
 /**
  * Build the Sprint 10 Transport Capability Registry seeded with the bootstrap
@@ -536,106 +523,9 @@ export function buildCapabilityGraphEngine(): CapabilityGraphEngine {
 }
 
 // ---------------------------------------------------------------------------
-// Sprint 16 — config-driven engine builders.
-//
-// These rebuild the deterministic policy engines from a {@link RuntimeConfig}
-// slice instead of the hard-coded bootstrap constants. The server uses them so
-// the firewall / routing / privacy / rate-limiting / adaptive-defense / graph
-// engines are derived from the active {@link RuntimeConfigSnapshot}. They remain
-// purely in-memory and perform no network, persistence, AI/ML, or browser work.
+// Sprint 37 — config-driven engine builders moved to runtime-factory.ts.
+// Re-exported above for backwards compatibility with existing test imports.
 // ---------------------------------------------------------------------------
-
-/**
- * Build a Capability Firewall from declarative {@link CapabilityPolicy} entries.
- *
- * Each policy expands to one deny-by-default `allow` rule per tool at its
- * `maxRiskLevel`. A policy that declares `requiresConfirmationAbove` flags its
- * rules as requiring human confirmation (routing matching requests into the
- * approval queue). The expansion is order-preserving and reproduces the legacy
- * bootstrap firewall exactly. No transport is opened — `transport` is metadata.
- */
-export function buildFirewallFromConfig(
-  policies: readonly CapabilityPolicy[]
-): CapabilityFirewall {
-  const rules: PolicyRule[] = [];
-  for (const policy of policies) {
-    const requiresConfirmation = policy.requiresConfirmationAbove !== undefined;
-    for (const tool of policy.allowedTools) {
-      rules.push({
-        effect: 'allow',
-        agentId: policy.agentId,
-        compartment: policy.compartmentId,
-        tool,
-        maxRiskLevel: policy.maxRiskLevel,
-        transport: 'direct',
-        requiresConfirmation
-      });
-    }
-  }
-  const document: PolicyDocument = { defaultDeny: true, rules };
-  return new CapabilityFirewall(new YamlPolicyEngine(document));
-}
-
-/** Build a Transport Policy Engine from config transport-policy rules. */
-export function buildTransportPolicyEngineFromConfig(
-  rules: readonly TransportPolicyRule[]
-): TransportPolicyEngine {
-  const engine = new TransportPolicyEngine();
-  for (const rule of rules) {
-    engine.registerRule(rule);
-  }
-  return engine;
-}
-
-/** Build a Privacy Boundary Engine from config privacy-boundary rules. */
-export function buildPrivacyBoundaryEngineFromConfig(
-  rules: readonly PrivacyBoundaryRule[]
-): PrivacyBoundaryEngine {
-  const engine = new PrivacyBoundaryEngine();
-  for (const rule of rules) {
-    engine.registerRule(rule);
-  }
-  return engine;
-}
-
-/** Build a Capability Rate Limiter from config rate-limit policies. */
-export function buildRateLimiterFromConfig(
-  policies: readonly RateLimitPolicy[]
-): CapabilityRateLimiter {
-  const limiter = new CapabilityRateLimiter();
-  for (const policy of policies) {
-    limiter.registerPolicy(policy);
-  }
-  return limiter;
-}
-
-/** Build an Adaptive Defense Engine from config adaptive-defense policies. */
-export function buildAdaptiveDefenseEngineFromConfig(
-  policies: readonly AdaptiveDefensePolicy[]
-): AdaptiveDefenseEngine {
-  const engine = new AdaptiveDefenseEngine();
-  for (const policy of policies) {
-    engine.registerPolicy(policy);
-  }
-  return engine;
-}
-
-/**
- * Build a Capability Graph Engine from config graph transition rules and
- * dependency-isolation policies.
- */
-export function buildCapabilityGraphEngineFromConfig(
-  config: RuntimeConfig
-): CapabilityGraphEngine {
-  const engine = new CapabilityGraphEngine();
-  for (const rule of config.graphTransitionRules) {
-    engine.registerTransitionRule(rule);
-  }
-  for (const policy of config.isolationPolicies) {
-    engine.registerIsolationPolicy(policy);
-  }
-  return engine;
-}
 
 
 /**
@@ -1894,49 +1784,24 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
     runtimeConfigLoader?.getSnapshot() ??
     createSnapshot(DEFAULT_RUNTIME_CONFIG, Date.now());
 
-  // The config-derived policy engines are rebuildable on reload. An explicitly
-  // injected engine always wins on initial construction (test injection); a
-  // reload rebuilds them from the freshly loaded config.
-  let firewall = options.firewall;
-  let transportPolicyEngine =
-    options.transportPolicyEngine ??
-    buildTransportPolicyEngineFromConfig(activeSnapshot.config.transportPolicies);
-  let privacyBoundaryEngine =
-    options.privacyBoundaryEngine ??
-    buildPrivacyBoundaryEngineFromConfig(
-      activeSnapshot.config.privacyBoundaryRules
-    );
-  let rateLimiter =
-    options.rateLimiter ??
-    buildRateLimiterFromConfig(activeSnapshot.config.rateLimitPolicies);
-  let adaptiveDefenseEngine =
-    options.adaptiveDefenseEngine ??
-    buildAdaptiveDefenseEngineFromConfig(
-      activeSnapshot.config.adaptiveDefensePolicies
-    );
-  let capabilityGraphEngine =
-    options.capabilityGraphEngine ??
-    buildCapabilityGraphEngineFromConfig(activeSnapshot.config);
-
-  /**
-   * Real execution engine for POST /v1/capabilities/execute.
-   *
-   * Built from the active runtime config's `transports.searxng` section. If
-   * SearXNG is enabled, this is a SearXNG-only engine with SEARXNG_SANDBOX_POLICY.
-   * If SearXNG is absent or disabled, `realSearXngEngine` is `null` and the
-   * execute endpoint returns `denied` (NO_REAL_TRANSPORT_AVAILABLE). There is
-   * no mock fallback on the real execute path.
-   *
-   * Rebuilt on every config reload. Invalid configs are logged and ignored
-   * (the previous engine is preserved — fail-safe for the SearXNG engine).
-   */
-  let realSearXngEngine: ExecutionEngine | null = (() => {
-    try {
-      return buildSearXngExecutionEngine(activeSnapshot.config);
-    } catch {
-      return null;
-    }
-  })();
+  // Sprint 37: config-derived engines composed via buildReloadableDependencies().
+  // Injected options win on initial construction (test injection); reloads
+  // rebuild from the fresh snapshot with no overrides.
+  let rd = buildReloadableDependencies(activeSnapshot, {
+    firewall: options.firewall,
+    transportPolicyEngine: options.transportPolicyEngine,
+    privacyBoundaryEngine: options.privacyBoundaryEngine,
+    rateLimiter: options.rateLimiter,
+    adaptiveDefenseEngine: options.adaptiveDefenseEngine,
+    capabilityGraphEngine: options.capabilityGraphEngine,
+  });
+  let firewall = rd.firewall;
+  let transportPolicyEngine = rd.transportPolicyEngine;
+  let privacyBoundaryEngine = rd.privacyBoundaryEngine;
+  let rateLimiter = rd.rateLimiter;
+  let adaptiveDefenseEngine = rd.adaptiveDefenseEngine;
+  let capabilityGraphEngine = rd.capabilityGraphEngine;
+  let realSearXngEngine = rd.realSearXngEngine;
 
   /**
    * Rebuild the config-derived policy engines from a freshly reloaded snapshot.
@@ -1945,23 +1810,20 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
    */
   const applyReloadedSnapshot = (snapshot: RuntimeConfigSnapshot): void => {
     activeSnapshot = snapshot;
-    firewall = buildFirewallFromConfig(snapshot.config.firewallPolicies);
-    transportPolicyEngine = buildTransportPolicyEngineFromConfig(
-      snapshot.config.transportPolicies
-    );
-    privacyBoundaryEngine = buildPrivacyBoundaryEngineFromConfig(
-      snapshot.config.privacyBoundaryRules
-    );
-    rateLimiter = buildRateLimiterFromConfig(snapshot.config.rateLimitPolicies);
-    adaptiveDefenseEngine = buildAdaptiveDefenseEngineFromConfig(
-      snapshot.config.adaptiveDefensePolicies
-    );
-    capabilityGraphEngine = buildCapabilityGraphEngineFromConfig(snapshot.config);
+    const next = buildReloadableDependencies(snapshot);
+    firewall = next.firewall;
+    transportPolicyEngine = next.transportPolicyEngine;
+    privacyBoundaryEngine = next.privacyBoundaryEngine;
+    rateLimiter = next.rateLimiter;
+    adaptiveDefenseEngine = next.adaptiveDefenseEngine;
+    capabilityGraphEngine = next.capabilityGraphEngine;
+    // Rebuild SearXNG engine with a separate try/catch so a bad SearXNG config
+    // on reload keeps the previous engine rather than switching to null+deny.
+    // A valid null (SearXNG disabled) is still applied.
     try {
       realSearXngEngine = buildSearXngExecutionEngine(snapshot.config);
     } catch {
-      // Fail-safe: an invalid searxng config on reload doesn't crash the server.
-      // The previous engine is preserved.
+      // Fail-safe: invalid SearXNG config on reload keeps the previous engine.
     }
   };
 
@@ -4297,7 +4159,8 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         rotationCount: fingerprintState.profile.rotationCount,
         correlationRisk: fingerprintState.profile.correlationRisk,
         rotated: fingerprintState.rotated
-      }
+      },
+      isReal: false,
     };
     // Surface the sandbox decision (allow or block) when the engine enforced it.
     if (result.sandbox !== undefined) {
@@ -5129,7 +4992,9 @@ export function createLocalApiApp(options: LocalApiOptions): express.Express {
         rotationCount: fingerprintStateExec.profile.rotationCount,
         correlationRisk: fingerprintStateExec.profile.correlationRisk,
         rotated: fingerprintStateExec.rotated
-      }
+      },
+      // Sprint 37 — /execute always uses a real transport when allowed.
+      isReal: true,
     };
     if (resultExec.sandbox !== undefined) response.sandbox = toSandboxDecisionView(resultExec.sandbox);
     if (defenseView !== undefined) response.defense = defenseView;
